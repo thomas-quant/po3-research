@@ -1,0 +1,13 @@
+Week_Period,Weekly_Open,Weekly_Close,Bullish,Low_Session,Low_Hour,High_Session,High_Hour
+2025-03-18/2025-03-24,20050.5,20336.5,True,Other,18,New York Afternoon,15
+2025-03-25/2025-03-31,20337.0,19365.0,False,New York Morning,9,Asia,20
+2025-04-01/2025-04-07,19366.25,17768.5,False,Asia,19,Other,16
+2025-04-08/2025-04-14,17767.25,18915.5,True,Other,1,New York Afternoon,15
+2025-04-15/2025-04-21,18915.0,17980.0,False,New York Afternoon,14,New York Morning,10
+2025-04-22/2025-04-28,17979.5,19573.5,True,Other,1,Other,22
+2025-04-29/2025-05-05,19572.25,19987.75,True,New York Morning,10,New York Afternoon,14
+2025-05-06/2025-05-12,19987.75,20848.0,True,New York Afternoon,14,Other,16
+2025-05-13/2025-05-19,20847.25,21436.25,True,Other,0,Asia,20
+2025-05-20/2025-05-26,21436.5,21150.25,False,Other,8,New York Afternoon,12
+2025-05-27/2025-06-02,21150.0,21460.5,True,New York Afternoon,12,London,4
+2025-06-03/2025-06-09,21460.75,21809.5,True,London,4,New York Morning,11

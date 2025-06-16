@@ -1,0 +1,11 @@
+Low_Weekday,London,New York Afternoon,New York Morning,Other,Week_Type,Asia
+Monday,0.0,0.0,0.0,0.0,Bullish,
+Tuesday,12.5,0.0,0.0,25.0,Bullish,
+Wednesday,0.0,12.5,12.5,12.5,Bullish,
+Thursday,0.0,0.0,0.0,0.0,Bullish,
+Friday,0.0,12.5,0.0,0.0,Bullish,
+Monday,,25.0,25.0,0.0,Bearish,0.0
+Tuesday,,0.0,0.0,0.0,Bearish,0.0
+Wednesday,,0.0,0.0,0.0,Bearish,0.0
+Thursday,,0.0,0.0,0.0,Bearish,0.0
+Friday,,0.0,0.0,25.0,Bearish,0.0
