@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+
+# Generated Output
+data/
+*.csv
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.log
+
+# Temporary
+*.tmp
+*.bak
+.cache/
