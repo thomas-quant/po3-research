@@ -42,3 +42,6 @@ data/
 *.tmp
 *.bak
 .cache/
+
+# Git worktrees
+.worktrees/
