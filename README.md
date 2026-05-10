@@ -1,246 +1,261 @@
-# PO3 Research — Weekly Market Pattern Analysis
+# PO3 Research — Futures Path & Weekly Extreme Analysis
 
-Research analyzing when the high/low of a week will most likely form, using ES (S&P 500 E-mini) and NQ (Nasdaq-100 E-mini) 1-minute OHLCV data from 2020–2025.
+Research toolkit for studying ES and NQ futures structure from 1-minute OHLCV data. The project started as weekly high/low timing research and now includes intraday key-level retaps, forward-touch probabilities, path dependency, TWAP/VWAP context, and early-week signals that relate intraday behavior to weekly distributions.
 
-The resample frequency is configurable (1h, 4h, 1D, etc.), and session-based patterns are computed from the raw timestamps.
+Data is intentionally not tracked in git. Expected local files:
 
----
+- `data/es_1m.parquet`
+- `data/nq_1m.parquet`
 
-## Project Overview
+Current data schema is UTC-first:
 
-**Main Script:** `analysis.py` — Unified monolith script that consolidates all analysis functionality.
+| Column | Notes |
+| --- | --- |
+| `datetime_utc` | timezone-aware UTC timestamp |
+| `Open`, `High`, `Low`, `Close`, `Volume` | 1-minute OHLCV |
 
-**Dataset:** ~1.85M rows of 1-minute candlesticks (ES and NQ) covering 5+ years of market data.
-
-**Key Finding:** Bullish weeks show a strong pattern where LOWs form on Mondays (~59%) and HIGHs form on Fridays (~61%), suggesting a "buy-low-Monday, sell-high-Friday" opportunity.
-
----
-
-## Data Structure
-
-### Data Files
-- `data/es_1m.parquet` — E-mini S&P 500, 1-minute OHLCV
-- `data/nq_1m.parquet` — E-mini Nasdaq-100, 1-minute OHLCV
-
-### Parquet Schema
-| Column | Type | Notes |
-|--------|------|-------|
-| `DateTime_ET` | datetime64 | Eastern Time (no timezone), must be localized with `tz_localize("America/New_York", ambiguous="infer")` |
-| `Open` | float64 | Opening price |
-| `High` | float64 | High price |
-| `Low` | float64 | Low price |
-| `Close` | float64 | Closing price |
-| `Volume` | int64 | Volume |
-| `DateTime_UTC` | datetime64 | UTC equivalent |
-| `session` | string | Trading session (Asia, London, NY AM, NY PM, Other) |
-| `window` | string | Time window within session |
+Legacy schemas with `DateTime_ET` / `DateTime_UTC` are still supported.
 
 ---
 
-## Script Usage
-
-### Basic Configuration
-
-Open `analysis.py` and modify the CONFIG section:
-
-```python
-SYMBOL      = "ES"                    # label used in chart titles
-DATA_PATH   = "data/es_1m.parquet"   # 1-minute OHLCV parquet
-RESAMPLE_TO = "1h"                    # "1h", "4h", "1D", etc.
-OUTPUT_DIR  = Path("output")          # where charts are saved
-```
-
-### Running the Script
+## Quick Start
 
 ```bash
-python analysis.py
+python3 analysis.py
 ```
 
-**Output:**
-- Weekly summary table (printed to console)
-- 7 chart files saved to `output/` directory (PNG format):
-  - `1_weekly_high_day.png` — HIGH distribution by weekday
-  - `1_weekly_low_day.png` — LOW distribution by weekday
-  - `2_weekly_high_session.png` — HIGH distribution by session
-  - `2_weekly_low_session.png` — LOW distribution by session
-  - `3_weekly_extreme_hours.png` — Extreme distribution by hour
-  - `4_weekly_high_day_session_heatmap.png` — HIGH by day × session
-  - `4_weekly_low_day_session_heatmap.png` — LOW by day × session
-- 5 experiment charts (hypothesis testing)
-
-### Experiment Framework
-
-The script includes a `run_experiment()` function for custom analysis:
+Default config in `analysis.py`:
 
 ```python
-# Example: P(High forms on Friday | Bullish week)
-run_experiment(weekly, "Bull_Bear", "High_Weekday", target_order=DAYS)
-
-# Example: Compare bullish/bearish weeks
-run_experiment(weekly, "Prev_Bull_Bear", "Bull_Bear")
-
-# Example: Session-based analysis
-run_experiment(weekly, "Low_Session", "High_Weekday",
-               factor_order=SESSION_ORDER, target_order=DAYS)
+SYMBOL = "ES"
+DATA_PATH = "data/es_1m.parquet"
+RESAMPLE_TO = "1h"
+OUTPUT_DIR = Path("output")
 ```
 
----
+To run NQ, change `SYMBOL` and `DATA_PATH`, or call the research functions directly with `data/nq_1m.parquet`.
 
-## Key Findings (ES, 1h resample, 2020–2025)
+Dependencies:
 
-### Dataset Summary
-- **273 weeks** analyzed
-- **156 bullish** (57%), **117 bearish** (43%)
-
-### Bullish Weeks
-- **LOW forms on Monday:** ~59% (buy the dip early week)
-- **HIGH forms on Friday:** ~61% (sell into strength end of week)
-- Pattern: Strong "buy Monday low, sell Friday high" bias
-
-### Bearish Weeks
-- **HIGH forms on Monday:** ~45% (short early weakness)
-- **LOW forms on Friday:** ~56% (cover into support)
-
-### Session Patterns
-- **Asia session** (19:00–00:00 ET): Often produces weekly extremes during Asia market hours
-- **London session** (00:00–09:00 ET): Continuation or reversal patterns
-- **NY AM session** (09:00–12:00 ET): High volatility, often establishes weekly direction
-- **NY PM session** (12:00–16:00 ET): May close out weekly extremes
-
----
-
-## Script Structure
-
-### 1. Load & Resample
-```python
-load_and_resample(path, resample_to)
-```
-- Loads parquet file
-- Localizes ET timezone
-- Resamples OHLCV data to specified frequency
-
-### 2. Build Weekly Data
-```python
-build_weekly(df)
-```
-- Groups data into Monday-anchored weeks (custom `trading_week_monday()` key)
-- Extracts:
-  - `Bull_Bear` — Weekly close vs. open (Bullish/Bearish)
-  - `Prev_Bull_Bear` — Previous week's direction
-  - `Low_Weekday`, `High_Weekday` — Which weekday the extreme formed
-  - `Low_Session`, `High_Session` — Which session the extreme formed
-  - `Low_Hour`, `High_Hour` — Which hour (for hourly data)
-
-### 3. Generate Standard Charts
-- **Day Distribution:** Probability of extreme forming on each day
-- **Session Distribution:** Probability of extreme forming in each session
-- **Hour Distribution:** Probability of extreme forming in each hour
-- **Day×Session Heatmap:** Joint distribution visualization
-
-### 4. Run Experiments
-```python
-run_experiment(weekly, factor_col, target_col, factor_order=None, target_order=None)
-```
-- Compares conditional probability P(Y|X) against baseline P(Y)
-- Produces side-by-side bar chart
-- Highlights significant deviations
-
----
-
-## Critical Bug Fix
-
-**Issue:** `pd.Grouper(freq="W-MON")` creates Tuesday→Monday buckets, with Monday as the LAST day of each group. This inflates Monday's extremes and leaks Sunday 18:00–23:59 CME open data into wrong groups.
-
-**Solution:** Custom `trading_week_monday()` function:
-- Assigns Sunday 18:00+ (CME open) to the **next** Monday
-- Creates proper Monday→Friday buckets
-- Pairs with `trading_weekday()` for correct weekday labeling (Sunday timestamps → "Monday")
-
----
-
-## Sessions (ET Time Zones)
-
-| Session | ET Hours | Notes |
-|---------|----------|-------|
-| Asia | 19:00–00:00 | CME open, overnight |
-| London | 00:00–09:00 | European AM |
-| NY AM | 09:00–12:00 | US morning open |
-| NY PM | 12:00–16:00 | US afternoon |
-| Other | 16:00–19:00 | Evening, pre-Asia |
-
----
-
-## File Structure
-
-```
-weekly po3/
-├── README.md                    # This file
-├── CLAUDE.md                    # Project guidelines and architecture
-├── analysis.py                  # Main monolith script
-├── data/
-│   ├── es_1m.parquet           # E-mini S&P 500 data (1-minute OHLCV)
-│   └── nq_1m.parquet           # E-mini Nasdaq-100 data (1-minute OHLCV)
-└── output/                      # Generated output (charts and data)
-    ├── *.png                    # Standard charts (matplotlib)
-    └── *.csv                    # Exported analysis data
-```
-
----
-
-## Requirements
-
-- Python 3.8+
-- `pandas` — Data manipulation
-- `numpy` — Numerical operations
-- `pyarrow` — Parquet file I/O
-- `matplotlib` — Chart generation
-
-Install dependencies:
 ```bash
-pip install pandas numpy matplotlib pyarrow
+pip install pandas numpy matplotlib pyarrow pytest
 ```
 
 ---
 
-## Usage Examples
+## What This Research Measures
 
-### Run Full Analysis (ES, 1-hour data)
+### 1. Weekly extreme timing
+
+Builds Monday-anchored futures weeks and measures when the weekly high/low forms:
+
+- weekday distribution
+- session distribution
+- hour distribution
+- day × session heatmaps
+- bullish/bearish week conditioning
+- prior-week direction experiments
+
+Core functions:
+
+- `load_and_resample(path, resample_to)`
+- `build_weekly(df)`
+- `run_experiment(...)`
+
+### 2. Online weekly event distribution
+
+Builds one row per week × bar to study whether weekly high/low has formed yet, using only path-state features known at that point:
+
+- developing weekly range
+- close location in developing range
+- return from weekly open
+- prior high/low break state
+- range expansion bucket
+- train/OOS split
+- bootstrap confidence intervals
+- survival curves and remaining-event distributions
+
+Output path:
+
+```text
+output/research_events/
+```
+
+### 3. Weekly-open revisits
+
+Uses 1-minute data to measure when price revisits the weekly open.
+
+Definition:
+
+- weekly open = first 1-minute bar open of the trading week
+- revisit = `Low <= weekly_open <= High`
+- Sunday evening excluded from revisit counting
+- Monday only counts from 09:30 ET onward
+- timing buckets are learned from train quantiles, with OOS validation
+
+### 4. Intraday key-level retaps
+
+Studies daily key opens:
+
+| Level | ET time |
+| --- | --- |
+| Globex open | 18:00 |
+| NY midnight open | 00:00 |
+| NY 09:30 open | 09:30 |
+| NY 13:00 open | 13:00 |
+
+Trading day convention: 18:00 ET belongs to the next RTH date.
+
+Measures:
+
+- whether each level is revisited same trading day
+- first revisit session/hour
+- total touch bars by session
+- day close above/below level
+- day bullish/bearish
+- high/low already formed at revisit
+- post-revisit excursions
+
+Output path:
+
+```text
+output/research_events/intraday_levels/
+```
+
+### 5. Forward-touch probabilities
+
+For each key level and later bucket, estimates:
+
+```text
+P(level touched again from bucket start through same-day close)
+```
+
+Examples:
+
+- probability midnight open is touched after 09:30
+- probability 09:30 open is touched after 13:00
+- probability 13:00 open is touched after 15:00
+
+Outputs include 15-minute and 1-hour bucket tables.
+
+### 6. Intraday → weekly path dependency
+
+Links intraday behavior around key levels to weekly outcomes.
+
+Metrics bucketed with train p25/p75 quantiles:
+
+- minutes to first revisit
+- touch-bar count
+- post-revisit high/low excursion
+
+Weekly outcomes:
+
+- week bullish %
+- weekly high Friday %
+- weekly low Monday %
+- weekly high/low formed by that day %
+
+Output paths:
+
+```text
+output/research_events/path_dependency_es/
+output/research_events/path_dependency_nq/
+```
+
+### 7. Relative path, TWAP/VWAP, and composite context
+
+Measures how much time/distance price spends around key levels during pre-session windows:
+
+| Window | ET range |
+| --- | --- |
+| Globex to Midnight | 18:00 → 00:00 |
+| Midnight to 09:30 | 00:00 → 09:30 |
+| 09:30 to 13:00 | 09:30 → 13:00 |
+| 13:00 to Close | 13:00 → 17:00 |
+
+Features:
+
+- % bars above/below/touching each level
+- mean/max distance above/below level
+- window TWAP and VWAP
+- TWAP/VWAP distance to level
+- composite state vs all prior defined levels:
+  - `Above_All`
+  - `Below_All`
+  - `Between`
+
+Summaries test whether path context predicts:
+
+- next-session direction/return
+- daily close above/below level
+- daily bullish/bearish close
+- Monday/Tuesday path → weekly high/low distribution
+
+Output paths:
+
+```text
+output/research_events/relative_path_es/
+output/research_events/relative_path_nq/
+```
+
+---
+
+## Time & Session Handling
+
+All research is expressed in New York time. UTC source data is converted to `America/New_York`.
+
+Sessions:
+
+| Session | ET hours |
+| --- | --- |
+| Asia | 19:00–00:00 |
+| London | 00:00–09:00 |
+| NY AM | 09:00–12:00 |
+| NY PM | 12:00–16:00 |
+| Other | 16:00–19:00 |
+
+Trading week handling is custom. Do not use `pd.Grouper(freq="W-MON")`; it creates Tuesday→Monday buckets. Use `trading_week_monday(ts)` instead.
+
+---
+
+## Important Outputs
+
+Generated outputs are local artifacts and ignored by git.
+
+```text
+output/
+├── *.png                                  # standard weekly charts
+└── research_events/
+    ├── intraday_levels/
+    ├── intraday_levels_nq/
+    ├── path_dependency_es/
+    ├── path_dependency_nq/
+    ├── relative_path_es/
+    └── relative_path_nq/
+```
+
+---
+
+## Tests
+
 ```bash
-python analysis.py
-```
-Generates all default charts and prints weekly summary.
-
-### Customize Data Source
-Edit `analysis.py` CONFIG:
-```python
-SYMBOL = "NQ"
-DATA_PATH = "data/nq_1m.parquet"
+python3 -m pytest -q tests/test_event_research.py
+python3 -m py_compile analysis.py
 ```
 
-### Change Resample Frequency
-```python
-RESAMPLE_TO = "4h"  # 4-hour candles instead of 1-hour
-```
+The tests cover:
 
----
-
-## References
-
-- **Trading Weeks:** Groups are Monday (18:00 CME open Sunday evening) through Friday (16:00 ET close)
-- **Timezone:** All timestamps in Eastern Time (America/New_York)
-- **Data Period:** 2020–2025 (5+ years)
-- **Chart Format:** PNG files (matplotlib) saved at 150 DPI to `output/`
+- UTC/ET data loading
+- futures week and trading-day mapping
+- weekly event rows
+- weekly-open revisits
+- intraday key-level revisits
+- forward-touch probabilities
+- path-dependency buckets
+- relative path TWAP/VWAP/composite features
 
 ---
 
 ## Notes
 
-- The `DateTime_ET` column requires timezone localization before use; the script handles this automatically
-- Session labels (Asia, London, etc.) are computed from raw timestamps — they do not need to be pre-loaded in the parquet file
-- Charts show relative probability distributions; absolute probabilities depend on sample size
-- Backtesting results require proper transaction costs and slippage assumptions
-
----
-
-**Last Updated:** March 2026
-**Data Period:** 2020–2025
+This is research infrastructure, not a trading system. Outputs are descriptive/conditional distributions intended to help reason about futures path structure, not standalone trade signals.

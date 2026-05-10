@@ -45,3 +45,5 @@ data/
 
 # Git worktrees
 .worktrees/
+CLAUDE.md
+output/
