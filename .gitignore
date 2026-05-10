@@ -46,4 +46,6 @@ data/
 # Git worktrees
 .worktrees/
 CLAUDE.md
-output/
+output/*
+!output/**/
+!output/**/*.png

@@ -43,6 +43,14 @@ pip install pandas numpy matplotlib pyarrow pytest
 
 ---
 
+## Example Output
+
+The chart below shows an example forward-touch distribution: after each 15-minute bucket, what is the probability ES retaps the NY midnight open before the same trading day ends?
+
+![ES midnight open forward-touch probability](output/examples/es_midnight_open_forward_touch_15m.png)
+
+---
+
 ## What This Research Measures
 
 ### 1. Weekly extreme timing
