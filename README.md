@@ -28,20 +28,22 @@ Takeaway: both indices show the same broad path tendency in this sample: weekly 
 
 Takeaway: a large share of days still retap the NY midnight open after 09:30 ET. By 13:00 ET, retap probability drops but remains material.
 
-### TWAP/VWAP location has strongest conditional power for same-day close state
+### TWAP/VWAP needed a sanity check: same-level close state was mostly tautological
 
-The strongest OOS deltas come from whether session TWAP/VWAP is above or below the tracked key level. The biggest signal is not weekly timing; it is whether the day closes above that level.
+The first pass showed large deltas for “TWAP/VWAP above a key open → day closes above that same key open.” That is mostly a mechanical state check: if price spent the window above a level, closing above that level later is not much of a discovery.
 
-| Symbol | Strongest OOS level/window | Signal | Target | Best side | Delta vs baseline |
+The current matrix removes that headline target and scores only future/non-overlap outcomes. It also subtracts a simple sanity baseline: whether the window ended above or below the same level. Positive values below are the residual edge after that baseline.
+
+| Symbol | Strongest OOS non-tautological level/window | Signal | Target | Best side | Residual edge |
 | --- | --- | --- | --- | --- | ---: |
-| ES | NY 13:00 Open / 13:00→Close | TWAP | Day close above level | Below | 38.64 ppt |
-| ES | NY 13:00 Open / 13:00→Close | VWAP | Day close above level | Below | 36.59 ppt |
-| ES | NY 09:30 Open / 09:30→13:00 | TWAP | Day close above level | Below | 29.68 ppt |
-| NQ | NY 13:00 Open / 13:00→Close | TWAP | Day close above level | Below | 34.42 ppt |
-| NQ | NY 09:30 Open / 09:30→13:00 | TWAP | Day close above level | Below | 33.63 ppt |
-| NQ | NY 09:30 Open / 09:30→13:00 | VWAP | Day close above level | Below | 32.61 ppt |
+| ES | NY 13:00 Open / 13:00→Close | VWAP | Weekly high Friday | Below | 2.95 ppt |
+| ES | Globex Open / Globex→Midnight | VWAP | Week bullish | Below | 2.74 ppt |
+| ES | Globex Open / Globex→Midnight | VWAP | Weekly low Monday | Below | 2.33 ppt |
+| NQ | NY 09:30 Open / 09:30→13:00 | TWAP | Week bullish | Below | 3.72 ppt |
+| NQ | Globex Open / Globex→Midnight | TWAP | Week bullish | Below | 2.91 ppt |
+| NQ | Globex Open / Globex→Midnight | VWAP | Week bullish | Below | 2.83 ppt |
 
-Interpretation: when the window TWAP/VWAP is below the relevant key open, the close-above-level outcome falls sharply below baseline; when above, it rises sharply above baseline. Weekly targets show smaller deltas, but the matrix keeps them visible for comparison.
+Interpretation: once the obvious “where did the window close vs the level?” baseline is removed, remaining TWAP/VWAP edge is much smaller. Treat these as weak conditional structure candidates, not strong predictive findings.
 
 ![ES TWAP/VWAP predictive matrix](output/examples/es_twap_vwap_predictive_matrix.png)
 
@@ -114,7 +116,8 @@ Signals:
 Targets:
 
 - next-session bullish %
-- day close above level %
+- next-session positive return %
+- day bullish %
 - week bullish %
 - weekly high Friday %
 - weekly low Monday %
@@ -123,11 +126,12 @@ For each split, level, window, signal, and target:
 
 ```text
 baseline = P(target)
-above_delta = P(target | TWAP/VWAP above level) - baseline
-below_delta = P(target | TWAP/VWAP below level) - baseline
+raw_delta = P(target | TWAP/VWAP side) - baseline
+end_state_delta = P(target | window close side vs level) - baseline
+residual_edge = abs(raw_delta) - abs(end_state_delta)
 ```
 
-The matrix cell shows the strongest absolute above/below delta in percentage points.
+The matrix cell shows positive residual edge in percentage points. Zero means TWAP/VWAP did not beat the simple end-state baseline.
 
 </details>
 

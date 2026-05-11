@@ -314,16 +314,17 @@ def _build_findings_summary(symbol: str, weekly: pd.DataFrame, df_1m: pd.DataFra
     if not twap_summary.empty:
         for split in ["Train", "OOS"]:
             sub = twap_summary[twap_summary["Split"].eq(split)].copy()
+            sub = sub[sub["End_State_Adjusted_Delta_Ppt"].notna()]
             if sub.empty:
                 continue
-            best = sub.sort_values("Abs_Best_Delta_Ppt", ascending=False).iloc[0]
+            best = sub.sort_values("End_State_Adjusted_Delta_Ppt", ascending=False).iloc[0]
             rows.append({
                 "Symbol": symbol,
-                "Metric": "Strongest TWAP/VWAP conditional delta",
+                "Metric": "Strongest non-tautological TWAP/VWAP delta",
                 "Split": split,
                 "Segment": f"{best['Level_Name']} / {best['Window_Name']} / {best['Signal']} / {best['Target']} / {best['Best_Side']}",
-                "Value": round(float(best["Abs_Best_Delta_Ppt"]), 2),
-                "Context": "absolute percentage-point delta vs baseline",
+                "Value": round(float(best["End_State_Adjusted_Delta_Ppt"]), 2),
+                "Context": "ppt edge remaining after end-close-above-level sanity baseline",
             })
     return pd.DataFrame(rows, columns=FINDINGS_COLUMNS)
 
@@ -403,7 +404,8 @@ def _plot_twap_vwap_matrix(summary: pd.DataFrame, symbol: str, output: Path) -> 
         plot = summary[summary["Split"].eq("Train")].copy()
         split_label = "Train"
     plot["Row"] = plot["Level_Name"].str.replace("_", " ") + "\n" + plot["Window_Name"].str.replace("_", "→") + "\n" + plot["Signal"]
-    pivot = plot.pivot_table(index="Row", columns="Target", values="Abs_Best_Delta_Ppt", aggfunc="max").fillna(0)
+    plot["Positive_Adjusted_Delta_Ppt"] = plot["End_State_Adjusted_Delta_Ppt"].clip(lower=0)
+    pivot = plot.pivot_table(index="Row", columns="Target", values="Positive_Adjusted_Delta_Ppt", aggfunc="max").fillna(0)
     target_order = ["Next session bullish", "Next session positive return", "Day bullish", "Week bullish", "Weekly high Friday", "Weekly low Monday"]
     pivot = pivot.reindex(columns=target_order, fill_value=0)
 
@@ -411,7 +413,7 @@ def _plot_twap_vwap_matrix(summary: pd.DataFrame, symbol: str, output: Path) -> 
     vmax = max(5.0, float(pivot.to_numpy().max()) if len(pivot) else 5.0)
     im = ax.imshow(pivot.values, cmap="YlOrRd", aspect="auto", vmin=0, vmax=vmax)
     ax.set_title(f"{symbol.upper()} TWAP/VWAP conditional deltas by level window", loc="left", fontsize=15, fontweight="bold", color=TEXT)
-    ax.text(0, 1.02, f"{split_label} split. Future/non-overlap targets only; cell = strongest abs delta vs target baseline.", transform=ax.transAxes, color=MUTED, fontsize=10)
+    ax.text(0, 1.02, f"{split_label} split. Cell = positive incremental ppt after end-close-above-level sanity baseline.", transform=ax.transAxes, color=MUTED, fontsize=10)
     ax.set_xticks(range(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns, rotation=25, ha="right")
     ax.set_yticks(range(len(pivot.index)))
@@ -420,7 +422,7 @@ def _plot_twap_vwap_matrix(summary: pd.DataFrame, symbol: str, output: Path) -> 
         for c in range(pivot.shape[1]):
             v = float(pivot.values[r, c])
             ax.text(c, r, f"{v:.1f}", ha="center", va="center", fontsize=8, color="white" if v > vmax * 0.58 else TEXT)
-    fig.colorbar(im, ax=ax, label="abs delta vs baseline (ppt)")
+    fig.colorbar(im, ax=ax, label="incremental delta after sanity baseline (ppt)")
     fig.tight_layout()
     _finish(fig, output)
 
