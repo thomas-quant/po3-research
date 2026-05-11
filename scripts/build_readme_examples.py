@@ -29,6 +29,7 @@ from po3_research.research import (
     intraday_level_forward_touch_distribution,
     load_1m_source,
     load_and_resample,
+    trading_week_monday,
 )
 
 DEFAULT_SYMBOL = "ES"
@@ -43,6 +44,32 @@ GOLD = "#C99700"
 GRID = "#D9DEE7"
 TEXT = "#20242A"
 MUTED = "#5D6673"
+
+FINDINGS_COLUMNS = ["Symbol", "Metric", "Split", "Segment", "Value", "Context"]
+TWAP_VWAP_COLUMNS = [
+    "Symbol",
+    "Split",
+    "Level_Name",
+    "Window_Name",
+    "Signal",
+    "Target",
+    "Baseline_Pct",
+    "Above_Pct",
+    "Below_Pct",
+    "Above_Delta_Ppt",
+    "Below_Delta_Ppt",
+    "Abs_Best_Delta_Ppt",
+    "Best_Side",
+    "n_above",
+    "n_below",
+]
+
+LEVEL_WINDOW_PAIRS = [
+    ("Globex_Open", "Globex_to_Midnight"),
+    ("NY_Midnight_Open", "Midnight_to_0930"),
+    ("NY_0930_Open", "0930_to_1300"),
+    ("NY_1300_Open", "1300_to_Close"),
+]
 
 
 @dataclass(frozen=True)
@@ -63,6 +90,26 @@ def gallery_specs(symbol: str = DEFAULT_SYMBOL) -> list[GallerySpec]:
         GallerySpec(f"{s}_midnight_open_forward_touch_15m.png", f"{label} midnight-open forward-touch probability"),
         GallerySpec(f"{s}_relative_path_context_summary.png", f"{label} relative path context summary"),
     ]
+
+def matrix_specs(symbol: str = DEFAULT_SYMBOL) -> list[GallerySpec]:
+    """Stable README TWAP/VWAP matrix file list."""
+    s = symbol.lower()
+    label = symbol.upper()
+    return [GallerySpec(f"{s}_twap_vwap_predictive_matrix.png", f"{label} TWAP/VWAP predictive matrix")]
+
+
+def parse_symbol_data_args(values: list[str] | None) -> list[tuple[str, Path]]:
+    """Parse SYMBOL=PATH CLI pairs."""
+    pairs: list[tuple[str, Path]] = []
+    for value in values or []:
+        if "=" not in value:
+            raise ValueError(f"Expected SYMBOL=PATH, got {value!r}")
+        symbol, path = value.split("=", 1)
+        symbol = symbol.strip().upper()
+        if not symbol or not path.strip():
+            raise ValueError(f"Expected SYMBOL=PATH, got {value!r}")
+        pairs.append((symbol, Path(path.strip())))
+    return pairs
 
 
 def _style_axes(ax: plt.Axes) -> None:
@@ -220,9 +267,152 @@ def _plot_relative_path(df_1m: pd.DataFrame, symbol: str, output: Path) -> None:
     _finish(fig, output)
 
 
-def build_examples(symbol: str, data_path: Path, output_dir: Path, resample_to: str) -> None:
+def _pct(series: pd.Series) -> float:
+    clean = series.dropna()
+    return round(float(clean.mean() * 100), 4) if len(clean) else np.nan
+
+
+def _top_category(series: pd.Series) -> tuple[str, float]:
+    pct = series.value_counts(normalize=True).mul(100)
+    if pct.empty:
+        return "n/a", np.nan
+    return str(pct.index[0]), round(float(pct.iloc[0]), 2)
+
+
+def _build_findings_summary(symbol: str, weekly: pd.DataFrame, df_1m: pd.DataFrame, twap_summary: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    symbol = symbol.upper()
+    for split, group in [("All", weekly), ("Train", weekly[weekly.index <= pd.Timestamp("2023-12-31", tz="America/New_York")]), ("OOS", weekly[weekly.index > pd.Timestamp("2023-12-31", tz="America/New_York")])]:
+        if group.empty:
+            continue
+        low_day, low_pct = _top_category(group["Low_Weekday"])
+        high_day, high_pct = _top_category(group["High_Weekday"])
+        bull_pct = round(float(group["Bull_Bear"].eq("Bullish").mean() * 100), 2)
+        rows.extend([
+            {"Symbol": symbol, "Metric": "Most common weekly low day", "Split": split, "Segment": low_day, "Value": low_pct, "Context": "% of weeks"},
+            {"Symbol": symbol, "Metric": "Most common weekly high day", "Split": split, "Segment": high_day, "Value": high_pct, "Context": "% of weeks"},
+            {"Symbol": symbol, "Metric": "Bullish week rate", "Split": split, "Segment": "Bullish", "Value": bull_pct, "Context": "% of weeks"},
+        ])
+
+    forward = intraday_level_forward_touch_distribution(df_1m, bucket_freq="15min")
+    for bucket in ["09:30", "13:00"]:
+        sub = forward[(forward["Split"].eq("Train")) & (forward["Level_Name"].eq("NY_Midnight_Open")) & (forward["Bucket_Time"].eq(bucket))]
+        if not sub.empty:
+            rows.append({"Symbol": symbol, "Metric": "Midnight open later touch", "Split": "Train", "Segment": f"from {bucket}", "Value": round(float(sub["touch_pct"].iloc[0]), 2), "Context": "% of days touched later"})
+
+    if not twap_summary.empty:
+        for split in ["Train", "OOS"]:
+            sub = twap_summary[twap_summary["Split"].eq(split)].copy()
+            if sub.empty:
+                continue
+            best = sub.sort_values("Abs_Best_Delta_Ppt", ascending=False).iloc[0]
+            rows.append({
+                "Symbol": symbol,
+                "Metric": "Strongest TWAP/VWAP conditional delta",
+                "Split": split,
+                "Segment": f"{best['Level_Name']} / {best['Window_Name']} / {best['Signal']} / {best['Target']} / {best['Best_Side']}",
+                "Value": round(float(best["Abs_Best_Delta_Ppt"]), 2),
+                "Context": "absolute percentage-point delta vs baseline",
+            })
+    return pd.DataFrame(rows, columns=FINDINGS_COLUMNS)
+
+
+def _build_twap_vwap_summary(symbol: str, rows: pd.DataFrame, weekly: pd.DataFrame) -> pd.DataFrame:
+    detail = rows.copy()
+    detail["Week_Start"] = pd.to_datetime(detail["Trading_Day"]).map(trading_week_monday)
+    weekly_targets = weekly[["Bull_Bear", "High_Weekday", "Low_Weekday"]].copy()
+    detail = detail.join(weekly_targets, on="Week_Start")
+    detail["Week_Bullish"] = detail["Bull_Bear"].eq("Bullish")
+    detail["Weekly_High_Friday"] = detail["High_Weekday"].eq("Friday")
+    detail["Weekly_Low_Monday"] = detail["Low_Weekday"].eq("Monday")
+
+    targets = [
+        ("Next session bullish", "Next_Session_Bullish"),
+        ("Day close above level", "Day_Close_Above_Level"),
+        ("Week bullish", "Week_Bullish"),
+        ("Weekly high Friday", "Weekly_High_Friday"),
+        ("Weekly low Monday", "Weekly_Low_Monday"),
+    ]
+    records: list[dict[str, object]] = []
+    for level_name, window_name in LEVEL_WINDOW_PAIRS:
+        pair_rows = detail[detail["Level_Name"].eq(level_name) & detail["Window_Name"].eq(window_name)]
+        if pair_rows.empty:
+            continue
+        for split, split_rows in pair_rows.groupby("Split", dropna=False):
+            for signal in ["TWAP_Above_Level", "VWAP_Above_Level"]:
+                if signal not in split_rows:
+                    continue
+                above_mask = split_rows[signal].astype(bool)
+                below_mask = ~above_mask
+                for target_label, target_col in targets:
+                    target = split_rows[target_col]
+                    baseline = _pct(target)
+                    above = _pct(target[above_mask])
+                    below = _pct(target[below_mask])
+                    above_delta = round(float(above - baseline), 4) if not pd.isna(above) and not pd.isna(baseline) else np.nan
+                    below_delta = round(float(below - baseline), 4) if not pd.isna(below) and not pd.isna(baseline) else np.nan
+                    if pd.isna(above_delta) and pd.isna(below_delta):
+                        best_side = "n/a"
+                        abs_best = np.nan
+                    elif pd.isna(below_delta) or abs(above_delta) >= abs(below_delta):
+                        best_side = "Above"
+                        abs_best = abs(above_delta)
+                    else:
+                        best_side = "Below"
+                        abs_best = abs(below_delta)
+                    records.append({
+                        "Symbol": symbol.upper(),
+                        "Split": split,
+                        "Level_Name": level_name,
+                        "Window_Name": window_name,
+                        "Signal": signal.replace("_Above_Level", ""),
+                        "Target": target_label,
+                        "Baseline_Pct": baseline,
+                        "Above_Pct": above,
+                        "Below_Pct": below,
+                        "Above_Delta_Ppt": above_delta,
+                        "Below_Delta_Ppt": below_delta,
+                        "Abs_Best_Delta_Ppt": round(float(abs_best), 4) if not pd.isna(abs_best) else np.nan,
+                        "Best_Side": best_side,
+                        "n_above": int(above_mask.sum()),
+                        "n_below": int(below_mask.sum()),
+                    })
+    return pd.DataFrame(records, columns=TWAP_VWAP_COLUMNS)
+
+
+def _plot_twap_vwap_matrix(summary: pd.DataFrame, symbol: str, output: Path) -> None:
+    plot = summary[summary["Split"].eq("OOS")].copy()
+    split_label = "OOS"
+    if plot.empty:
+        plot = summary[summary["Split"].eq("Train")].copy()
+        split_label = "Train"
+    plot["Row"] = plot["Level_Name"].str.replace("_", " ") + "\n" + plot["Window_Name"].str.replace("_", "→") + "\n" + plot["Signal"]
+    pivot = plot.pivot_table(index="Row", columns="Target", values="Abs_Best_Delta_Ppt", aggfunc="max").fillna(0)
+    target_order = ["Next session bullish", "Day close above level", "Week bullish", "Weekly high Friday", "Weekly low Monday"]
+    pivot = pivot.reindex(columns=target_order, fill_value=0)
+
+    fig, ax = plt.subplots(figsize=(13.5, max(6, len(pivot) * 0.58)))
+    vmax = max(5.0, float(pivot.to_numpy().max()) if len(pivot) else 5.0)
+    im = ax.imshow(pivot.values, cmap="YlOrRd", aspect="auto", vmin=0, vmax=vmax)
+    ax.set_title(f"{symbol.upper()} TWAP/VWAP conditional deltas by level window", loc="left", fontsize=15, fontweight="bold", color=TEXT)
+    ax.text(0, 1.02, f"{split_label} split. Cell = strongest absolute percentage-point delta vs baseline for above/below level.", transform=ax.transAxes, color=MUTED, fontsize=10)
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels(pivot.columns, rotation=25, ha="right")
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels(pivot.index)
+    for r in range(pivot.shape[0]):
+        for c in range(pivot.shape[1]):
+            v = float(pivot.values[r, c])
+            ax.text(c, r, f"{v:.1f}", ha="center", va="center", fontsize=8, color="white" if v > vmax * 0.58 else TEXT)
+    fig.colorbar(im, ax=ax, label="abs delta vs baseline (ppt)")
+    fig.tight_layout()
+    _finish(fig, output)
+
+
+def build_examples(symbol: str, data_path: Path, output_dir: Path, resample_to: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     symbol = symbol.upper()
     specs = {spec.filename: spec for spec in gallery_specs(symbol)}
+    matrix = {spec.filename: spec for spec in matrix_specs(symbol)}
     df_1m = load_1m_source(str(data_path))
     df = load_and_resample(str(data_path), resample_to)
     weekly = build_weekly(df)
@@ -234,19 +424,38 @@ def build_examples(symbol: str, data_path: Path, output_dir: Path, resample_to: 
     _plot_forward_touch(df_1m, symbol, output_dir / specs[f"{symbol.lower()}_midnight_open_forward_touch_15m.png"].filename)
     _plot_relative_path(df_1m, symbol, output_dir / specs[f"{symbol.lower()}_relative_path_context_summary.png"].filename)
 
+    relative_rows = build_relative_level_path_rows(df_1m)
+    twap_summary = _build_twap_vwap_summary(symbol, relative_rows, weekly)
+    _plot_twap_vwap_matrix(twap_summary, symbol, output_dir / matrix[f"{symbol.lower()}_twap_vwap_predictive_matrix.png"].filename)
+    findings = _build_findings_summary(symbol, weekly, df_1m, twap_summary)
+    return findings, twap_summary
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build README example PNGs from local futures parquet data.")
     parser.add_argument("--symbol", default=DEFAULT_SYMBOL, help="Symbol label for chart titles and filenames. Default: ES")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA_PATH, help="Path to 1-minute parquet data. Default: data/es_1m.parquet")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Directory for README PNGs. Default: output/examples")
+    parser.add_argument("--symbol-data", action="append", default=[], metavar="SYMBOL=PATH", help="Add a symbol/data pair. Repeat for ES and NQ. Overrides --symbol/--data when supplied.")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Directory for README artifacts. Default: output/examples")
     parser.add_argument("--resample-to", default=DEFAULT_RESAMPLE_TO, help="Resample interval for weekly charts. Default: 1h")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    build_examples(args.symbol, args.data, args.output_dir, args.resample_to)
+    pairs = parse_symbol_data_args(args.symbol_data) if args.symbol_data else [(args.symbol.upper(), args.data)]
+    findings_parts = []
+    twap_parts = []
+    for symbol, data_path in pairs:
+        findings, twap_summary = build_examples(symbol, data_path, args.output_dir, args.resample_to)
+        findings_parts.append(findings)
+        twap_parts.append(twap_summary)
+    if findings_parts:
+        pd.concat(findings_parts, ignore_index=True).to_csv(args.output_dir / "readme_findings_summary.csv", index=False)
+        print(f"wrote {args.output_dir / 'readme_findings_summary.csv'}")
+    if twap_parts:
+        pd.concat(twap_parts, ignore_index=True).to_csv(args.output_dir / "readme_twap_vwap_predictive_summary.csv", index=False)
+        print(f"wrote {args.output_dir / 'readme_twap_vwap_predictive_summary.csv'}")
 
 
 if __name__ == "__main__":
