@@ -17,6 +17,20 @@ This is research infrastructure, not a trading system. “Predictive” means co
 
 Takeaway: both indices show the same broad path tendency in this sample: weekly lows form most often on Monday, weekly highs most often on Friday, with the pattern stronger in OOS.
 
+
+### Globex→Midnight direction is early state, not post-midnight prediction
+
+Positive Globex→Midnight change is a strong classifier for the full-day bullish label, but it does not meaningfully predict continuation after midnight.
+
+| Symbol | Split | Full-day bullish baseline | If Midnight > Globex | If Midnight ≤ Globex | Midnight→Close positive baseline | If Midnight > Globex | If Midnight ≤ Globex |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES | Train | 54.63% | 63.56% | 45.20% | 54.63% | 53.82% | 55.48% |
+| ES | OOS | 55.41% | 62.76% | 47.06% | 52.29% | 50.69% | 54.12% |
+| NQ | Train | 55.11% | 63.57% | 45.57% | 55.18% | 55.47% | 54.84% |
+| NQ | OOS | 54.41% | 63.61% | 43.60% | 53.86% | 53.74% | 54.00% |
+
+Takeaway: “Midnight above Globex” mostly says the day is already bullish relative to the Globex open. It is useful as an early day-state label, but the forward-only Midnight→Close test shows little/no continuation edge.
+
 ### Midnight-open retaps remain common after the cash open
 
 | Symbol | Train condition | Probability midnight open is touched later |
