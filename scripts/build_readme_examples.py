@@ -58,6 +58,8 @@ TWAP_VWAP_COLUMNS = [
     "Below_Pct",
     "Above_Delta_Ppt",
     "Below_Delta_Ppt",
+    "End_State_Baseline_Pct",
+    "End_State_Adjusted_Delta_Ppt",
     "Abs_Best_Delta_Ppt",
     "Best_Side",
     "n_above",
@@ -69,6 +71,15 @@ LEVEL_WINDOW_PAIRS = [
     ("NY_Midnight_Open", "Midnight_to_0930"),
     ("NY_0930_Open", "0930_to_1300"),
     ("NY_1300_Open", "1300_to_Close"),
+]
+
+TWAP_VWAP_TARGETS = [
+    ("Next session bullish", "Next_Session_Bullish"),
+    ("Next session positive return", "Next_Session_Positive_Return"),
+    ("Day bullish", "Day_Bullish"),
+    ("Week bullish", "Week_Bullish"),
+    ("Weekly high Friday", "Weekly_High_Friday"),
+    ("Weekly low Monday", "Weekly_Low_Monday"),
 ]
 
 
@@ -325,14 +336,9 @@ def _build_twap_vwap_summary(symbol: str, rows: pd.DataFrame, weekly: pd.DataFra
     detail["Week_Bullish"] = detail["Bull_Bear"].eq("Bullish")
     detail["Weekly_High_Friday"] = detail["High_Weekday"].eq("Friday")
     detail["Weekly_Low_Monday"] = detail["Low_Weekday"].eq("Monday")
+    detail["Next_Session_Positive_Return"] = detail["Next_Session_Return_Pct"] > 0
 
-    targets = [
-        ("Next session bullish", "Next_Session_Bullish"),
-        ("Day close above level", "Day_Close_Above_Level"),
-        ("Week bullish", "Week_Bullish"),
-        ("Weekly high Friday", "Weekly_High_Friday"),
-        ("Weekly low Monday", "Weekly_Low_Monday"),
-    ]
+    targets = TWAP_VWAP_TARGETS
     records: list[dict[str, object]] = []
     for level_name, window_name in LEVEL_WINDOW_PAIRS:
         pair_rows = detail[detail["Level_Name"].eq(level_name) & detail["Window_Name"].eq(window_name)]
@@ -360,6 +366,14 @@ def _build_twap_vwap_summary(symbol: str, rows: pd.DataFrame, weekly: pd.DataFra
                     else:
                         best_side = "Below"
                         abs_best = abs(below_delta)
+
+                    end_mask = split_rows["Window_Close_Above_Level"].astype(bool)
+                    end_above = _pct(target[end_mask])
+                    end_below = _pct(target[~end_mask])
+                    end_above_delta = abs(end_above - baseline) if not pd.isna(end_above) and not pd.isna(baseline) else np.nan
+                    end_below_delta = abs(end_below - baseline) if not pd.isna(end_below) and not pd.isna(baseline) else np.nan
+                    end_best = np.nanmax([end_above_delta, end_below_delta]) if not (pd.isna(end_above_delta) and pd.isna(end_below_delta)) else np.nan
+                    adjusted = abs_best - end_best if not pd.isna(abs_best) and not pd.isna(end_best) else np.nan
                     records.append({
                         "Symbol": symbol.upper(),
                         "Split": split,
@@ -372,6 +386,8 @@ def _build_twap_vwap_summary(symbol: str, rows: pd.DataFrame, weekly: pd.DataFra
                         "Below_Pct": below,
                         "Above_Delta_Ppt": above_delta,
                         "Below_Delta_Ppt": below_delta,
+                        "End_State_Baseline_Pct": round(float(end_best), 4) if not pd.isna(end_best) else np.nan,
+                        "End_State_Adjusted_Delta_Ppt": round(float(adjusted), 4) if not pd.isna(adjusted) else np.nan,
                         "Abs_Best_Delta_Ppt": round(float(abs_best), 4) if not pd.isna(abs_best) else np.nan,
                         "Best_Side": best_side,
                         "n_above": int(above_mask.sum()),
@@ -388,14 +404,14 @@ def _plot_twap_vwap_matrix(summary: pd.DataFrame, symbol: str, output: Path) -> 
         split_label = "Train"
     plot["Row"] = plot["Level_Name"].str.replace("_", " ") + "\n" + plot["Window_Name"].str.replace("_", "→") + "\n" + plot["Signal"]
     pivot = plot.pivot_table(index="Row", columns="Target", values="Abs_Best_Delta_Ppt", aggfunc="max").fillna(0)
-    target_order = ["Next session bullish", "Day close above level", "Week bullish", "Weekly high Friday", "Weekly low Monday"]
+    target_order = ["Next session bullish", "Next session positive return", "Day bullish", "Week bullish", "Weekly high Friday", "Weekly low Monday"]
     pivot = pivot.reindex(columns=target_order, fill_value=0)
 
     fig, ax = plt.subplots(figsize=(13.5, max(6, len(pivot) * 0.58)))
     vmax = max(5.0, float(pivot.to_numpy().max()) if len(pivot) else 5.0)
     im = ax.imshow(pivot.values, cmap="YlOrRd", aspect="auto", vmin=0, vmax=vmax)
     ax.set_title(f"{symbol.upper()} TWAP/VWAP conditional deltas by level window", loc="left", fontsize=15, fontweight="bold", color=TEXT)
-    ax.text(0, 1.02, f"{split_label} split. Cell = strongest absolute percentage-point delta vs baseline for above/below level.", transform=ax.transAxes, color=MUTED, fontsize=10)
+    ax.text(0, 1.02, f"{split_label} split. Future/non-overlap targets only; cell = strongest abs delta vs target baseline.", transform=ax.transAxes, color=MUTED, fontsize=10)
     ax.set_xticks(range(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns, rotation=25, ha="right")
     ax.set_yticks(range(len(pivot.index)))

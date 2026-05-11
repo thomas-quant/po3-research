@@ -84,6 +84,8 @@ def test_summary_column_contracts_are_stable():
         "Below_Pct",
         "Above_Delta_Ppt",
         "Below_Delta_Ppt",
+        "End_State_Baseline_Pct",
+        "End_State_Adjusted_Delta_Ppt",
         "Abs_Best_Delta_Ppt",
         "Best_Side",
         "n_above",
@@ -95,3 +97,21 @@ def test_parse_symbol_data_args_supports_repeated_pairs():
     pairs = parse_symbol_data_args(["ES=data/es_1m.parquet", "NQ=data/nq_1m.parquet"])
 
     assert pairs == [("ES", Path("data/es_1m.parquet")), ("NQ", Path("data/nq_1m.parquet"))]
+
+
+def test_summary_targets_are_not_same_level_close_state():
+    forbidden = {"Day close above level"}
+    expected_future_targets = {
+        "Next session bullish",
+        "Next session positive return",
+        "Day bullish",
+        "Week bullish",
+        "Weekly high Friday",
+        "Weekly low Monday",
+    }
+
+    from scripts.build_readme_examples import TWAP_VWAP_TARGETS
+
+    targets = {label for label, _ in TWAP_VWAP_TARGETS}
+    assert targets.isdisjoint(forbidden)
+    assert expected_future_targets.issubset(targets)
