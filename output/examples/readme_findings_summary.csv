@@ -10,8 +10,8 @@ ES,Most common weekly high day,OOS,Friday,40.52,% of weeks
 ES,Bullish week rate,OOS,Bullish,59.48,% of weeks
 ES,Midnight open later touch,Train,from 09:30,65.72,% of days touched later
 ES,Midnight open later touch,Train,from 13:00,38.53,% of days touched later
-ES,Strongest TWAP/VWAP conditional delta,Train,NY_1300_Open / 1300_to_Close / TWAP / Day close above level / Below,36.62,absolute percentage-point delta vs baseline
-ES,Strongest TWAP/VWAP conditional delta,OOS,NY_1300_Open / 1300_to_Close / TWAP / Day close above level / Below,38.64,absolute percentage-point delta vs baseline
+ES,Strongest non-tautological TWAP/VWAP delta,Train,Globex_Open / Globex_to_Midnight / VWAP / Next session positive return / Below,0.37,ppt edge remaining after end-close-above-level sanity baseline
+ES,Strongest non-tautological TWAP/VWAP delta,OOS,NY_1300_Open / 1300_to_Close / VWAP / Weekly high Friday / Below,2.95,ppt edge remaining after end-close-above-level sanity baseline
 NQ,Most common weekly low day,All,Monday,36.89,% of weeks
 NQ,Most common weekly high day,All,Friday,34.83,% of weeks
 NQ,Bullish week rate,All,Bullish,58.62,% of weeks
@@ -23,5 +23,5 @@ NQ,Most common weekly high day,OOS,Friday,35.34,% of weeks
 NQ,Bullish week rate,OOS,Bullish,57.76,% of weeks
 NQ,Midnight open later touch,Train,from 09:30,69.67,% of days touched later
 NQ,Midnight open later touch,Train,from 13:00,36.6,% of days touched later
-NQ,Strongest TWAP/VWAP conditional delta,Train,NY_1300_Open / 1300_to_Close / TWAP / Day close above level / Below,35.86,absolute percentage-point delta vs baseline
-NQ,Strongest TWAP/VWAP conditional delta,OOS,NY_1300_Open / 1300_to_Close / TWAP / Day close above level / Below,34.42,absolute percentage-point delta vs baseline
+NQ,Strongest non-tautological TWAP/VWAP delta,Train,NY_Midnight_Open / Midnight_to_0930 / TWAP / Next session bullish / Below,1.16,ppt edge remaining after end-close-above-level sanity baseline
+NQ,Strongest non-tautological TWAP/VWAP delta,OOS,NY_0930_Open / 0930_to_1300 / TWAP / Week bullish / Below,3.72,ppt edge remaining after end-close-above-level sanity baseline
