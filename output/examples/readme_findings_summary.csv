@@ -1,0 +1,27 @@
+Symbol,Metric,Split,Segment,Value,Context
+ES,Most common weekly low day,All,Monday,35.92,% of weeks
+ES,Most common weekly high day,All,Friday,36.53,% of weeks
+ES,Bullish week rate,All,Bullish,59.59,% of weeks
+ES,Most common weekly low day,Train,Monday,34.75,% of weeks
+ES,Most common weekly high day,Train,Friday,35.88,% of weeks
+ES,Bullish week rate,Train,Bullish,59.6,% of weeks
+ES,Most common weekly low day,OOS,Monday,43.1,% of weeks
+ES,Most common weekly high day,OOS,Friday,40.52,% of weeks
+ES,Bullish week rate,OOS,Bullish,59.48,% of weeks
+ES,Midnight open later touch,Train,from 09:30,65.72,% of days touched later
+ES,Midnight open later touch,Train,from 13:00,38.53,% of days touched later
+ES,Strongest TWAP/VWAP conditional delta,Train,NY_1300_Open / 1300_to_Close / TWAP / Day close above level / Below,36.62,absolute percentage-point delta vs baseline
+ES,Strongest TWAP/VWAP conditional delta,OOS,NY_1300_Open / 1300_to_Close / TWAP / Day close above level / Below,38.64,absolute percentage-point delta vs baseline
+NQ,Most common weekly low day,All,Monday,36.89,% of weeks
+NQ,Most common weekly high day,All,Friday,34.83,% of weeks
+NQ,Bullish week rate,All,Bullish,58.62,% of weeks
+NQ,Most common weekly low day,Train,Monday,36.3,% of weeks
+NQ,Most common weekly high day,Train,Friday,34.75,% of weeks
+NQ,Bullish week rate,Train,Bullish,58.76,% of weeks
+NQ,Most common weekly low day,OOS,Monday,40.52,% of weeks
+NQ,Most common weekly high day,OOS,Friday,35.34,% of weeks
+NQ,Bullish week rate,OOS,Bullish,57.76,% of weeks
+NQ,Midnight open later touch,Train,from 09:30,69.67,% of days touched later
+NQ,Midnight open later touch,Train,from 13:00,36.6,% of days touched later
+NQ,Strongest TWAP/VWAP conditional delta,Train,NY_1300_Open / 1300_to_Close / TWAP / Day close above level / Below,35.86,absolute percentage-point delta vs baseline
+NQ,Strongest TWAP/VWAP conditional delta,OOS,NY_1300_Open / 1300_to_Close / TWAP / Day close above level / Below,34.42,absolute percentage-point delta vs baseline

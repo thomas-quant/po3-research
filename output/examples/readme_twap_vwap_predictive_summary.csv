@@ -1,0 +1,161 @@
+Symbol,Split,Level_Name,Window_Name,Signal,Target,Baseline_Pct,Above_Pct,Below_Pct,Above_Delta_Ppt,Below_Delta_Ppt,Abs_Best_Delta_Ppt,Best_Side,n_above,n_below
+ES,OOS,Globex_Open,Globex_to_Midnight,TWAP,Next session bullish,53.4636,53.5117,53.4091,0.0481,-0.0545,0.0545,Below,302,267
+ES,OOS,Globex_Open,Globex_to_Midnight,TWAP,Day close above level,55.536,64.5695,45.3184,9.0335,-10.2176,10.2176,Below,302,267
+ES,OOS,Globex_Open,Globex_to_Midnight,TWAP,Week bullish,59.4025,66.5563,51.3109,7.1538,-8.0916,8.0916,Below,302,267
+ES,OOS,Globex_Open,Globex_to_Midnight,TWAP,Weekly high Friday,41.1248,45.0331,36.7041,3.9083,-4.4207,4.4207,Below,302,267
+ES,OOS,Globex_Open,Globex_to_Midnight,TWAP,Weekly low Monday,42.8822,45.0331,40.4494,2.1509,-2.4328,2.4328,Below,302,267
+ES,OOS,Globex_Open,Globex_to_Midnight,VWAP,Next session bullish,53.4636,54.2955,52.5735,0.8319,-0.8901,0.8901,Below,294,275
+ES,OOS,Globex_Open,Globex_to_Midnight,VWAP,Day close above level,55.536,65.6463,44.7273,10.1103,-10.8087,10.8087,Below,294,275
+ES,OOS,Globex_Open,Globex_to_Midnight,VWAP,Week bullish,59.4025,67.6871,50.5455,8.2846,-8.857,8.857,Below,294,275
+ES,OOS,Globex_Open,Globex_to_Midnight,VWAP,Weekly high Friday,41.1248,45.5782,36.3636,4.4534,-4.7612,4.7612,Below,294,275
+ES,OOS,Globex_Open,Globex_to_Midnight,VWAP,Weekly low Monday,42.8822,46.5986,38.9091,3.7164,-3.9731,3.9731,Below,294,275
+ES,Train,Globex_Open,Globex_to_Midnight,TWAP,Next session bullish,54.606,53.7365,55.5032,-0.8695,0.8972,0.8972,Below,1765,1714
+ES,Train,Globex_Open,Globex_to_Midnight,TWAP,Day close above level,54.5847,62.8895,46.0327,8.3048,-8.552,8.552,Below,1765,1714
+ES,Train,Globex_Open,Globex_to_Midnight,TWAP,Week bullish,59.7873,61.5297,57.993,1.7424,-1.7943,1.7943,Below,1765,1714
+ES,Train,Globex_Open,Globex_to_Midnight,TWAP,Weekly high Friday,35.9011,36.3739,35.4142,0.4728,-0.4869,0.4869,Below,1765,1714
+ES,Train,Globex_Open,Globex_to_Midnight,TWAP,Weekly low Monday,34.7801,35.6941,33.839,0.914,-0.9411,0.9411,Below,1765,1714
+ES,Train,Globex_Open,Globex_to_Midnight,VWAP,Next session bullish,54.606,53.5244,55.7118,-1.0816,1.1058,1.1058,Below,1758,1721
+ES,Train,Globex_Open,Globex_to_Midnight,VWAP,Day close above level,54.5847,62.6849,46.3103,8.1002,-8.2744,8.2744,Below,1758,1721
+ES,Train,Globex_Open,Globex_to_Midnight,VWAP,Week bullish,59.7873,61.5472,57.9895,1.7599,-1.7978,1.7978,Below,1758,1721
+ES,Train,Globex_Open,Globex_to_Midnight,VWAP,Weekly high Friday,35.9011,36.4619,35.3283,0.5608,-0.5728,0.5728,Below,1758,1721
+ES,Train,Globex_Open,Globex_to_Midnight,VWAP,Weekly low Monday,34.7801,35.5518,33.9919,0.7717,-0.7882,0.7882,Below,1758,1721
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Next session bullish,51.7668,50.8251,52.8517,-0.9417,1.0849,1.0849,Below,304,263
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Day close above level,52.381,62.8289,40.3042,10.4479,-12.0768,12.0768,Below,304,263
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Week bullish,59.2593,63.8158,53.9924,4.5565,-5.2669,5.2669,Below,304,263
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Weekly high Friday,41.0935,44.7368,36.8821,3.6433,-4.2114,4.2114,Below,304,263
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Weekly low Monday,42.6808,48.0263,36.5019,5.3455,-6.1789,6.1789,Below,304,263
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Next session bullish,51.7668,50.8143,52.8958,-0.9525,1.129,1.129,Below,308,259
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Day close above level,52.381,63.3117,39.3822,10.9307,-12.9988,12.9988,Below,308,259
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Week bullish,59.2593,62.6623,55.2124,3.403,-4.0469,4.0469,Below,308,259
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Weekly high Friday,41.0935,43.8312,37.8378,2.7377,-3.2557,3.2557,Below,308,259
+ES,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Weekly low Monday,42.6808,47.7273,36.6795,5.0465,-6.0013,6.0013,Below,308,259
+ES,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Next session bullish,54.4818,55.4301,53.3546,0.9483,-1.1272,1.1272,Below,1868,1578
+ES,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Day close above level,54.614,67.8801,38.91,13.2661,-15.704,15.704,Below,1868,1578
+ES,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Week bullish,59.5473,66.0064,51.9011,6.4591,-7.6462,7.6462,Below,1868,1578
+ES,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Weekly high Friday,35.6936,39.9893,30.6084,4.2957,-5.0852,5.0852,Below,1868,1578
+ES,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Weekly low Monday,34.7069,39.1328,29.4677,4.4259,-5.2392,5.2392,Below,1868,1578
+ES,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Next session bullish,54.4818,55.2376,53.5919,0.7558,-0.8899,0.8899,Below,1860,1586
+ES,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Day close above level,54.614,69.1935,37.5158,14.5795,-17.0982,17.0982,Below,1860,1586
+ES,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Week bullish,59.5473,66.7742,51.0719,7.2269,-8.4754,8.4754,Below,1860,1586
+ES,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Weekly high Friday,35.6936,40.5914,29.9496,4.8978,-5.744,5.744,Below,1860,1586
+ES,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Weekly low Monday,34.7069,39.5161,29.0668,4.8092,-5.6401,5.6401,Below,1860,1586
+ES,OOS,NY_0930_Open,0930_to_1300,TWAP,Next session bullish,55.7798,55.7093,55.8594,-0.0705,0.0796,0.0796,Below,303,264
+ES,OOS,NY_0930_Open,0930_to_1300,TWAP,Day close above level,52.0282,77.8878,22.3485,25.8596,-29.6797,29.6797,Below,303,264
+ES,OOS,NY_0930_Open,0930_to_1300,TWAP,Week bullish,59.4356,64.3564,53.7879,4.9208,-5.6477,5.6477,Below,303,264
+ES,OOS,NY_0930_Open,0930_to_1300,TWAP,Weekly high Friday,41.2698,47.5248,34.0909,6.255,-7.1789,7.1789,Below,303,264
+ES,OOS,NY_0930_Open,0930_to_1300,TWAP,Weekly low Monday,42.8571,47.5248,37.5,4.6677,-5.3571,5.3571,Below,303,264
+ES,OOS,NY_0930_Open,0930_to_1300,VWAP,Next session bullish,55.7798,55.2347,56.3433,-0.5451,0.5635,0.5635,Below,291,276
+ES,OOS,NY_0930_Open,0930_to_1300,VWAP,Day close above level,52.0282,77.6632,25.0,25.635,-27.0282,27.0282,Below,291,276
+ES,OOS,NY_0930_Open,0930_to_1300,VWAP,Week bullish,59.4356,64.9485,53.6232,5.5129,-5.8124,5.8124,Below,291,276
+ES,OOS,NY_0930_Open,0930_to_1300,VWAP,Weekly high Friday,41.2698,47.7663,34.4203,6.4965,-6.8495,6.8495,Below,291,276
+ES,OOS,NY_0930_Open,0930_to_1300,VWAP,Weekly low Monday,42.8571,47.7663,37.6812,4.9092,-5.1759,5.1759,Below,291,276
+ES,Train,NY_0930_Open,0930_to_1300,TWAP,Next session bullish,54.5697,56.3205,52.6414,1.7508,-1.9283,1.9283,Below,1831,1653
+ES,Train,NY_0930_Open,0930_to_1300,TWAP,Day close above level,54.6211,78.2086,28.4936,23.5875,-26.1275,26.1275,Below,1831,1653
+ES,Train,NY_0930_Open,0930_to_1300,TWAP,Week bullish,59.8163,66.1933,52.7526,6.377,-7.0637,7.0637,Below,1831,1653
+ES,Train,NY_0930_Open,0930_to_1300,TWAP,Weekly high Friday,35.907,41.562,29.6431,5.655,-6.2639,6.2639,Below,1831,1653
+ES,Train,NY_0930_Open,0930_to_1300,TWAP,Weekly low Monday,34.7302,40.6881,28.1307,5.9579,-6.5995,6.5995,Below,1831,1653
+ES,Train,NY_0930_Open,0930_to_1300,VWAP,Next session bullish,54.5697,56.1033,53.0113,1.5336,-1.5584,1.5584,Below,1762,1722
+ES,Train,NY_0930_Open,0930_to_1300,VWAP,Day close above level,54.6211,78.0363,30.662,23.4152,-23.9591,23.9591,Below,1762,1722
+ES,Train,NY_0930_Open,0930_to_1300,VWAP,Week bullish,59.8163,66.4586,53.0197,6.6423,-6.7966,6.7966,Below,1762,1722
+ES,Train,NY_0930_Open,0930_to_1300,VWAP,Weekly high Friday,35.907,41.7707,29.9071,5.8637,-5.9999,5.9999,Below,1762,1722
+ES,Train,NY_0930_Open,0930_to_1300,VWAP,Weekly low Monday,34.7302,41.1464,28.1649,6.4162,-6.5653,6.5653,Below,1762,1722
+ES,OOS,NY_1300_Open,1300_to_Close,TWAP,Next session bullish,,,,,,,n/a,305,246
+ES,OOS,NY_1300_Open,1300_to_Close,TWAP,Day close above level,55.7169,86.8852,17.0732,31.1683,-38.6437,38.6437,Below,305,246
+ES,OOS,NY_1300_Open,1300_to_Close,TWAP,Week bullish,58.8022,68.8525,46.3415,10.0503,-12.4607,12.4607,Below,305,246
+ES,OOS,NY_1300_Open,1300_to_Close,TWAP,Weekly high Friday,41.0163,47.8689,32.5203,6.8526,-8.496,8.496,Below,305,246
+ES,OOS,NY_1300_Open,1300_to_Close,TWAP,Weekly low Monday,42.8312,48.1967,36.1789,5.3655,-6.6523,6.6523,Below,305,246
+ES,OOS,NY_1300_Open,1300_to_Close,VWAP,Next session bullish,,,,,,,n/a,300,251
+ES,OOS,NY_1300_Open,1300_to_Close,VWAP,Day close above level,55.7169,86.3333,19.1235,30.6164,-36.5934,36.5934,Below,300,251
+ES,OOS,NY_1300_Open,1300_to_Close,VWAP,Week bullish,58.8022,68.6667,47.012,9.8645,-11.7902,11.7902,Below,300,251
+ES,OOS,NY_1300_Open,1300_to_Close,VWAP,Weekly high Friday,41.0163,49.0,31.4741,7.9837,-9.5422,9.5422,Below,300,251
+ES,OOS,NY_1300_Open,1300_to_Close,VWAP,Weekly low Monday,42.8312,48.3333,36.255,5.5021,-6.5762,6.5762,Below,300,251
+ES,Train,NY_1300_Open,1300_to_Close,TWAP,Next session bullish,,,,,,,n/a,1819,1590
+ES,Train,NY_1300_Open,1300_to_Close,TWAP,Day close above level,54.4148,86.4211,17.7987,32.0063,-36.6161,36.6161,Below,1819,1590
+ES,Train,NY_1300_Open,1300_to_Close,TWAP,Week bullish,59.8416,66.63,52.0755,6.7884,-7.7661,7.7661,Below,1819,1590
+ES,Train,NY_1300_Open,1300_to_Close,TWAP,Weekly high Friday,35.993,41.2314,30.0,5.2384,-5.993,5.993,Below,1819,1590
+ES,Train,NY_1300_Open,1300_to_Close,TWAP,Weekly low Monday,34.8489,39.3623,29.6855,4.5134,-5.1634,5.1634,Below,1819,1590
+ES,Train,NY_1300_Open,1300_to_Close,VWAP,Next session bullish,,,,,,,n/a,1790,1619
+ES,Train,NY_1300_Open,1300_to_Close,VWAP,Day close above level,54.4148,87.095,18.2829,32.6802,-36.1319,36.1319,Below,1790,1619
+ES,Train,NY_1300_Open,1300_to_Close,VWAP,Week bullish,59.8416,66.2011,52.8104,6.3595,-7.0312,7.0312,Below,1790,1619
+ES,Train,NY_1300_Open,1300_to_Close,VWAP,Weekly high Friday,35.993,41.1173,30.3274,5.1243,-5.6656,5.6656,Below,1790,1619
+ES,Train,NY_1300_Open,1300_to_Close,VWAP,Weekly low Monday,34.8489,38.9944,30.2656,4.1455,-4.5833,4.5833,Below,1790,1619
+NQ,OOS,Globex_Open,Globex_to_Midnight,TWAP,Next session bullish,54.2705,54.8701,53.5433,0.5996,-0.7272,0.7272,Below,311,257
+NQ,OOS,Globex_Open,Globex_to_Midnight,TWAP,Day close above level,54.4014,63.9871,42.8016,9.5857,-11.5998,11.5998,Below,311,257
+NQ,OOS,Globex_Open,Globex_to_Midnight,TWAP,Week bullish,57.9225,66.5595,47.4708,8.637,-10.4517,10.4517,Below,311,257
+NQ,OOS,Globex_Open,Globex_to_Midnight,TWAP,Weekly high Friday,35.9155,42.7653,27.6265,6.8498,-8.289,8.289,Below,311,257
+NQ,OOS,Globex_Open,Globex_to_Midnight,TWAP,Weekly low Monday,40.493,44.0514,36.1868,3.5584,-4.3062,4.3062,Below,311,257
+NQ,OOS,Globex_Open,Globex_to_Midnight,VWAP,Next session bullish,54.2705,55.6667,52.6718,1.3962,-1.5987,1.5987,Below,303,265
+NQ,OOS,Globex_Open,Globex_to_Midnight,VWAP,Day close above level,54.4014,65.0165,42.2642,10.6151,-12.1372,12.1372,Below,303,265
+NQ,OOS,Globex_Open,Globex_to_Midnight,VWAP,Week bullish,57.9225,66.9967,47.5472,9.0742,-10.3753,10.3753,Below,303,265
+NQ,OOS,Globex_Open,Globex_to_Midnight,VWAP,Weekly high Friday,35.9155,42.9043,27.9245,6.9888,-7.991,7.991,Below,303,265
+NQ,OOS,Globex_Open,Globex_to_Midnight,VWAP,Weekly low Monday,40.493,44.2244,36.2264,3.7314,-4.2666,4.2666,Below,303,265
+NQ,Train,Globex_Open,Globex_to_Midnight,TWAP,Next session bullish,55.2876,55.213,55.3679,-0.0746,0.0803,0.0803,Below,1795,1674
+NQ,Train,Globex_Open,Globex_to_Midnight,TWAP,Day close above level,55.3474,63.1198,47.0131,7.7724,-8.3343,8.3343,Below,1795,1674
+NQ,Train,Globex_Open,Globex_to_Midnight,TWAP,Week bullish,58.8066,61.1699,56.2724,2.3633,-2.5342,2.5342,Below,1795,1674
+NQ,Train,Globex_Open,Globex_to_Midnight,TWAP,Weekly high Friday,34.8515,35.4875,34.1697,0.636,-0.6818,0.6818,Below,1795,1674
+NQ,Train,Globex_Open,Globex_to_Midnight,TWAP,Weekly low Monday,36.2064,37.7159,34.5878,1.5095,-1.6186,1.6186,Below,1795,1674
+NQ,Train,Globex_Open,Globex_to_Midnight,VWAP,Next session bullish,55.2876,55.2365,55.3421,-0.0511,0.0545,0.0545,Below,1785,1684
+NQ,Train,Globex_Open,Globex_to_Midnight,VWAP,Day close above level,55.3474,63.2493,46.9715,7.9019,-8.3759,8.3759,Below,1785,1684
+NQ,Train,Globex_Open,Globex_to_Midnight,VWAP,Week bullish,58.8066,61.3445,56.1164,2.5379,-2.6902,2.6902,Below,1785,1684
+NQ,Train,Globex_Open,Globex_to_Midnight,VWAP,Weekly high Friday,34.8515,35.7423,33.9074,0.8908,-0.9441,0.9441,Below,1785,1684
+NQ,Train,Globex_Open,Globex_to_Midnight,VWAP,Weekly low Monday,36.2064,37.535,34.7981,1.3286,-1.4083,1.4083,Below,1785,1684
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Next session bullish,53.1802,54.0,52.2556,0.8198,-0.9246,0.9246,Below,300,267
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Day close above level,53.7919,67.6667,38.2022,13.8748,-15.5897,15.5897,Below,300,267
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Week bullish,57.672,60.6667,54.3071,2.9947,-3.3649,3.3649,Below,300,267
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Weekly high Friday,35.8025,37.0,34.4569,1.1975,-1.3456,1.3456,Below,300,267
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,TWAP,Weekly low Monday,40.2116,45.3333,34.4569,5.1217,-5.7547,5.7547,Below,300,267
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Next session bullish,53.1802,53.5948,52.6923,0.4146,-0.4879,0.4879,Below,306,261
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Day close above level,53.7919,67.9739,37.1648,14.182,-16.6271,16.6271,Below,306,261
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Week bullish,57.672,60.4575,54.4061,2.7855,-3.2659,3.2659,Below,306,261
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Weekly high Friday,35.8025,37.2549,34.0996,1.4524,-1.7029,1.7029,Below,306,261
+NQ,OOS,NY_Midnight_Open,Midnight_to_0930,VWAP,Weekly low Monday,40.2116,44.7712,34.8659,4.5596,-5.3457,5.3457,Below,306,261
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Next session bullish,55.1274,56.2464,53.742,1.119,-1.3854,1.3854,Below,1746,1412
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Day close above level,55.1615,66.8958,40.6516,11.7343,-14.5099,14.5099,Below,1746,1412
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Week bullish,58.8664,63.0011,53.7535,4.1347,-5.1129,5.1129,Below,1746,1412
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Weekly high Friday,34.6422,37.457,31.1615,2.8148,-3.4807,3.4807,Below,1746,1412
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,TWAP,Weekly low Monday,36.1305,40.3207,30.949,4.1902,-5.1815,5.1815,Below,1746,1412
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Next session bullish,55.1274,56.1089,53.9278,0.9815,-1.1996,1.1996,Below,1737,1421
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Day close above level,55.1615,68.2211,39.1977,13.0596,-15.9638,15.9638,Below,1737,1421
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Week bullish,58.8664,63.9609,52.639,5.0945,-6.2274,6.2274,Below,1737,1421
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Weekly high Friday,34.6422,38.342,30.1196,3.6998,-4.5226,4.5226,Below,1737,1421
+NQ,Train,NY_Midnight_Open,Midnight_to_0930,VWAP,Weekly low Monday,36.1305,40.7024,30.5419,4.5719,-5.5886,5.5886,Below,1737,1421
+NQ,OOS,NY_0930_Open,0930_to_1300,TWAP,Next session bullish,55.2294,57.9505,52.2901,2.7211,-2.9393,2.9393,Below,297,270
+NQ,OOS,NY_0930_Open,0930_to_1300,TWAP,Day close above level,53.2628,83.8384,19.6296,30.5756,-33.6332,33.6332,Below,297,270
+NQ,OOS,NY_0930_Open,0930_to_1300,TWAP,Week bullish,57.8483,66.33,48.5185,8.4817,-9.3298,9.3298,Below,297,270
+NQ,OOS,NY_0930_Open,0930_to_1300,TWAP,Weekly high Friday,35.9788,42.7609,28.5185,6.7821,-7.4603,7.4603,Below,297,270
+NQ,OOS,NY_0930_Open,0930_to_1300,TWAP,Weekly low Monday,40.388,47.138,32.963,6.75,-7.425,7.425,Below,297,270
+NQ,OOS,NY_0930_Open,0930_to_1300,VWAP,Next session bullish,55.2294,58.1227,52.2388,2.8933,-2.9906,2.9906,Below,291,276
+NQ,OOS,NY_0930_Open,0930_to_1300,VWAP,Day close above level,53.2628,84.1924,20.6522,30.9296,-32.6106,32.6106,Below,291,276
+NQ,OOS,NY_0930_Open,0930_to_1300,VWAP,Week bullish,57.8483,65.6357,49.6377,7.7874,-8.2106,8.2106,Below,291,276
+NQ,OOS,NY_0930_Open,0930_to_1300,VWAP,Weekly high Friday,35.9788,42.9553,28.6232,6.9765,-7.3556,7.3556,Below,291,276
+NQ,OOS,NY_0930_Open,0930_to_1300,VWAP,Weekly low Monday,40.388,47.079,33.3333,6.691,-7.0547,7.0547,Below,291,276
+NQ,Train,NY_0930_Open,0930_to_1300,TWAP,Next session bullish,54.4809,56.169,52.6152,1.6881,-1.8657,1.8657,Below,1826,1658
+NQ,Train,NY_0930_Open,0930_to_1300,TWAP,Day close above level,55.3961,81.2705,26.8999,25.8744,-28.4962,28.4962,Below,1826,1658
+NQ,Train,NY_0930_Open,0930_to_1300,TWAP,Week bullish,58.9265,66.8675,50.1809,7.941,-8.7456,8.7456,Below,1826,1658
+NQ,Train,NY_0930_Open,0930_to_1300,TWAP,Weekly high Friday,34.845,40.1424,29.0109,5.2974,-5.8341,5.8341,Below,1826,1658
+NQ,Train,NY_0930_Open,0930_to_1300,TWAP,Weekly low Monday,36.3375,42.2234,29.8552,5.8859,-6.4823,6.4823,Below,1826,1658
+NQ,Train,NY_0930_Open,0930_to_1300,VWAP,Next session bullish,54.4809,56.9364,51.9079,2.4555,-2.573,2.573,Below,1780,1704
+NQ,Train,NY_0930_Open,0930_to_1300,VWAP,Day close above level,55.3961,81.8539,27.7582,26.4578,-27.6379,27.6379,Below,1780,1704
+NQ,Train,NY_0930_Open,0930_to_1300,VWAP,Week bullish,58.9265,67.0787,50.4108,8.1522,-8.5157,8.5157,Below,1780,1704
+NQ,Train,NY_0930_Open,0930_to_1300,VWAP,Weekly high Friday,34.845,40.8427,28.5798,5.9977,-6.2652,6.2652,Below,1780,1704
+NQ,Train,NY_0930_Open,0930_to_1300,VWAP,Weekly low Monday,36.3375,42.809,29.5775,6.4715,-6.76,6.76,Below,1780,1704
+NQ,OOS,NY_1300_Open,1300_to_Close,TWAP,Next session bullish,,,,,,,n/a,293,258
+NQ,OOS,NY_1300_Open,1300_to_Close,TWAP,Day close above level,55.3539,85.6655,20.9302,30.3116,-34.4237,34.4237,Below,293,258
+NQ,OOS,NY_1300_Open,1300_to_Close,TWAP,Week bullish,57.1688,64.5051,48.8372,7.3363,-8.3316,8.3316,Below,293,258
+NQ,OOS,NY_1300_Open,1300_to_Close,TWAP,Weekly high Friday,35.7532,42.3208,28.2946,6.5676,-7.4586,7.4586,Below,293,258
+NQ,OOS,NY_1300_Open,1300_to_Close,TWAP,Weekly low Monday,40.4719,46.0751,34.1085,5.6032,-6.3634,6.3634,Below,293,258
+NQ,OOS,NY_1300_Open,1300_to_Close,VWAP,Next session bullish,,,,,,,n/a,284,267
+NQ,OOS,NY_1300_Open,1300_to_Close,VWAP,Day close above level,55.3539,85.2113,23.5955,29.8574,-31.7584,31.7584,Below,284,267
+NQ,OOS,NY_1300_Open,1300_to_Close,VWAP,Week bullish,57.1688,65.1408,48.6891,7.972,-8.4797,8.4797,Below,284,267
+NQ,OOS,NY_1300_Open,1300_to_Close,VWAP,Weekly high Friday,35.7532,43.3099,27.7154,7.5567,-8.0378,8.0378,Below,284,267
+NQ,OOS,NY_1300_Open,1300_to_Close,VWAP,Weekly low Monday,40.4719,46.1268,34.4569,5.6549,-6.015,6.015,Below,284,267
+NQ,Train,NY_1300_Open,1300_to_Close,TWAP,Next session bullish,,,,,,,n/a,1815,1593
+NQ,Train,NY_1300_Open,1300_to_Close,TWAP,Day close above level,54.3134,85.7851,18.4557,31.4717,-35.8577,35.8577,Below,1815,1593
+NQ,Train,NY_1300_Open,1300_to_Close,TWAP,Week bullish,58.8908,65.0689,51.8519,6.1781,-7.0389,7.0389,Below,1815,1593
+NQ,Train,NY_1300_Open,1300_to_Close,TWAP,Weekly high Friday,34.8298,39.3939,29.6296,4.5641,-5.2002,5.2002,Below,1815,1593
+NQ,Train,NY_1300_Open,1300_to_Close,TWAP,Weekly low Monday,36.5023,40.6061,31.8267,4.1038,-4.6756,4.6756,Below,1815,1593
+NQ,Train,NY_1300_Open,1300_to_Close,VWAP,Next session bullish,,,,,,,n/a,1793,1615
+NQ,Train,NY_1300_Open,1300_to_Close,VWAP,Day close above level,54.3134,85.4992,19.6904,31.1858,-34.623,34.623,Below,1793,1615
+NQ,Train,NY_1300_Open,1300_to_Close,VWAP,Week bullish,58.8908,65.0864,52.0124,6.1956,-6.8784,6.8784,Below,1793,1615
+NQ,Train,NY_1300_Open,1300_to_Close,VWAP,Weekly high Friday,34.8298,39.2638,29.9071,4.434,-4.9227,4.9227,Below,1793,1615
+NQ,Train,NY_1300_Open,1300_to_Close,VWAP,Weekly low Monday,36.5023,40.435,32.1362,3.9327,-4.3661,4.3661,Below,1793,1615
