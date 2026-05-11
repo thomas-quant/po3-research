@@ -1,23 +1,64 @@
-# PO3 Research — Futures Path & Weekly Extreme Analysis
+# PO3 Research — ES/NQ Futures Path Results
 
-Research toolkit for studying ES and NQ futures structure from 1-minute OHLCV data. It measures weekly high/low timing, online extreme formation, weekly-open revisits, intraday key-level retaps, forward-touch probabilities, intraday → weekly path dependency, and relative path context around key opens.
+Research toolkit for measuring ES and NQ futures path structure from 1-minute OHLCV data. The README is results-first: charts and numbers below summarize the current local ES/NQ sample. Methods, conventions, and module details are collapsed below.
 
-This repository is research infrastructure, not a trading system. Outputs are descriptive and conditional distributions for reasoning about futures path structure.
+This is research infrastructure, not a trading system. “Predictive” means conditional association vs baseline in the sample, not a standalone trade rule.
 
-## Quick Start
+## Key Findings From Current ES/NQ Sample
 
-```bash
-python3 analysis.py
-```
+### Weekly extremes skew toward Monday lows and Friday highs
 
-Default config lives in `po3_research/research.py` and is re-exported by `analysis.py`:
+| Symbol | Sample | Most common weekly low | Most common weekly high | Bullish week rate |
+| --- | ---: | --- | --- | ---: |
+| ES | All | Monday — 35.92% | Friday — 36.53% | 59.59% |
+| ES | OOS | Monday — 43.10% | Friday — 40.52% | 59.48% |
+| NQ | All | Monday — 36.89% | Friday — 34.83% | 58.62% |
+| NQ | OOS | Monday — 40.52% | Friday — 35.34% | 57.76% |
 
-```python
-SYMBOL = "ES"
-DATA_PATH = "data/es_1m.parquet"
-RESAMPLE_TO = "1h"
-OUTPUT_DIR = Path("output")
-```
+Takeaway: both indices show the same broad path tendency in this sample: weekly lows form most often on Monday, weekly highs most often on Friday, with the pattern stronger in OOS.
+
+### Midnight-open retaps remain common after the cash open
+
+| Symbol | Train condition | Probability midnight open is touched later |
+| --- | --- | ---: |
+| ES | From 09:30 ET through same-day close | 65.72% |
+| ES | From 13:00 ET through same-day close | 38.53% |
+| NQ | From 09:30 ET through same-day close | 69.67% |
+| NQ | From 13:00 ET through same-day close | 36.60% |
+
+Takeaway: a large share of days still retap the NY midnight open after 09:30 ET. By 13:00 ET, retap probability drops but remains material.
+
+### TWAP/VWAP location has strongest conditional power for same-day close state
+
+The strongest OOS deltas come from whether session TWAP/VWAP is above or below the tracked key level. The biggest signal is not weekly timing; it is whether the day closes above that level.
+
+| Symbol | Strongest OOS level/window | Signal | Target | Best side | Delta vs baseline |
+| --- | --- | --- | --- | --- | ---: |
+| ES | NY 13:00 Open / 13:00→Close | TWAP | Day close above level | Below | 38.64 ppt |
+| ES | NY 13:00 Open / 13:00→Close | VWAP | Day close above level | Below | 36.59 ppt |
+| ES | NY 09:30 Open / 09:30→13:00 | TWAP | Day close above level | Below | 29.68 ppt |
+| NQ | NY 13:00 Open / 13:00→Close | TWAP | Day close above level | Below | 34.42 ppt |
+| NQ | NY 09:30 Open / 09:30→13:00 | TWAP | Day close above level | Below | 33.63 ppt |
+| NQ | NY 09:30 Open / 09:30→13:00 | VWAP | Day close above level | Below | 32.61 ppt |
+
+Interpretation: when the window TWAP/VWAP is below the relevant key open, the close-above-level outcome falls sharply below baseline; when above, it rises sharply above baseline. Weekly targets show smaller deltas, but the matrix keeps them visible for comparison.
+
+![ES TWAP/VWAP predictive matrix](output/examples/es_twap_vwap_predictive_matrix.png)
+
+![NQ TWAP/VWAP predictive matrix](output/examples/nq_twap_vwap_predictive_matrix.png)
+
+## ES/NQ Result Gallery
+
+| ES | NQ |
+| --- | --- |
+| ![ES weekly low weekday distribution](output/examples/es_weekly_low_day_distribution.png) | ![NQ weekly low weekday distribution](output/examples/nq_weekly_low_day_distribution.png) |
+| ![ES weekly high weekday distribution](output/examples/es_weekly_high_day_distribution.png) | ![NQ weekly high weekday distribution](output/examples/nq_weekly_high_day_distribution.png) |
+| ![ES weekly extreme hour distribution](output/examples/es_weekly_extreme_hour_distribution.png) | ![NQ weekly extreme hour distribution](output/examples/nq_weekly_extreme_hour_distribution.png) |
+| ![ES weekly day session heatmap](output/examples/es_weekly_day_session_heatmap.png) | ![NQ weekly day session heatmap](output/examples/nq_weekly_day_session_heatmap.png) |
+| ![ES midnight open forward-touch probability](output/examples/es_midnight_open_forward_touch_15m.png) | ![NQ midnight open forward-touch probability](output/examples/nq_midnight_open_forward_touch_15m.png) |
+| ![ES relative path context summary](output/examples/es_relative_path_context_summary.png) | ![NQ relative path context summary](output/examples/nq_relative_path_context_summary.png) |
+
+## Reproduce These Results
 
 Expected local data:
 
@@ -32,28 +73,63 @@ source .venv/bin/activate
 pip install pandas numpy matplotlib pyarrow pytest
 ```
 
-## README Example Gallery
-
-These tracked images are generated from local ES data with `scripts/build_readme_examples.py`.
-
-| Research view | Example |
-| --- | --- |
-| Weekly low weekday distribution | ![ES weekly low weekday distribution](output/examples/es_weekly_low_day_distribution.png) |
-| Weekly high weekday distribution | ![ES weekly high weekday distribution](output/examples/es_weekly_high_day_distribution.png) |
-| Weekly extreme hour distribution | ![ES weekly extreme hour distribution](output/examples/es_weekly_extreme_hour_distribution.png) |
-| Day × session timing heatmap | ![ES weekly day session heatmap](output/examples/es_weekly_day_session_heatmap.png) |
-| Midnight-open forward-touch probability | ![ES midnight open forward-touch probability](output/examples/es_midnight_open_forward_touch_15m.png) |
-| Relative path context before 09:30 | ![ES relative path context summary](output/examples/es_relative_path_context_summary.png) |
-
-Regenerate the gallery:
+Regenerate README artifacts for ES and NQ:
 
 ```bash
 python3 scripts/build_readme_examples.py \
-  --symbol ES \
-  --data data/es_1m.parquet \
+  --symbol-data ES=data/es_1m.parquet \
+  --symbol-data NQ=data/nq_1m.parquet \
   --output-dir output/examples \
   --resample-to 1h
 ```
+
+Generated summary tables:
+
+- `output/examples/readme_findings_summary.csv`
+- `output/examples/readme_twap_vwap_predictive_summary.csv`
+
+Run the full default ES research pass:
+
+```bash
+python3 analysis.py
+```
+
+<details>
+<summary><strong>How TWAP/VWAP predictive power is measured</strong></summary>
+
+For each key level and its matching forward window:
+
+| Key level | Window used for TWAP/VWAP | Main forward question |
+| --- | --- | --- |
+| Globex Open | Globex_to_Midnight | Does early Globex positioning relate to later session/day/week outcomes? |
+| NY Midnight Open | Midnight_to_0930 | Does overnight positioning relate to 09:30→13:00, daily, or weekly outcomes? |
+| NY 09:30 Open | 0930_to_1300 | Does AM positioning relate to 13:00→Close, daily, or weekly outcomes? |
+| NY 13:00 Open | 1300_to_Close | Does PM positioning relate to close state, daily, or weekly outcomes? |
+
+Signals:
+
+- `TWAP_Above_Level`
+- `VWAP_Above_Level`
+
+Targets:
+
+- next-session bullish %
+- day close above level %
+- week bullish %
+- weekly high Friday %
+- weekly low Monday %
+
+For each split, level, window, signal, and target:
+
+```text
+baseline = P(target)
+above_delta = P(target | TWAP/VWAP above level) - baseline
+below_delta = P(target | TWAP/VWAP below level) - baseline
+```
+
+The matrix cell shows the strongest absolute above/below delta in percentage points.
+
+</details>
 
 <details>
 <summary><strong>Data schema and time conventions</strong></summary>
@@ -157,10 +233,6 @@ Definition:
 - Monday only counts from 09:30 ET onward
 - timing buckets learned from train quantiles, then validated on OOS
 
-Function:
-
-- `build_weekly_open_revisit_rows(df_1m, weekly=None)`
-
 ## 4. Intraday Key-Level Retaps
 
 Studies daily key opens:
@@ -172,21 +244,7 @@ Studies daily key opens:
 | NY 09:30 open | 09:30 |
 | NY 13:00 open | 13:00 |
 
-Measures:
-
-- same-day revisit rate
-- first revisit session/hour
-- total touch bars by session
-- day close above/below level
-- day bullish/bearish state
-- whether high/low already formed at revisit
-- post-revisit high/low excursions
-
-Output path:
-
-```text
-output/research_events/intraday_levels/
-```
+Measures same-day revisit rates, first revisit timing, touch counts, close state, day direction, high/low already formed at revisit, and post-revisit excursions.
 
 ## 5. Forward-Touch Probabilities
 
@@ -196,73 +254,15 @@ For each key level and later bucket, estimates:
 P(level touched again from bucket start through same-day close)
 ```
 
-Examples:
-
-- probability midnight open is touched after 09:30
-- probability 09:30 open is touched after 13:00
-- probability 13:00 open is touched after 15:00
-
 Outputs include 15-minute and 1-hour bucket tables.
 
 ## 6. Intraday → Weekly Path Dependency
 
-Links intraday key-level behavior to weekly outcomes.
-
-Metrics bucketed with train p25/p75 quantiles:
-
-- minutes to first revisit
-- touch-bar count
-- post-revisit high/low excursion
-
-Weekly outcomes:
-
-- week bullish %
-- weekly high Friday %
-- weekly low Monday %
-- weekly high/low formed by that day %
-
-Output paths:
-
-```text
-output/research_events/path_dependency_es/
-output/research_events/path_dependency_nq/
-```
+Links intraday key-level behavior to weekly outcomes using train p25/p75 buckets for minutes to revisit, touch count, and post-revisit excursions.
 
 ## 7. Relative Path, TWAP/VWAP, and Composite Context
 
-Measures how much time/distance price spends around key levels during pre-session windows.
-
-| Window | ET range |
-| --- | --- |
-| Globex to Midnight | 18:00 → 00:00 |
-| Midnight to 09:30 | 00:00 → 09:30 |
-| 09:30 to 13:00 | 09:30 → 13:00 |
-| 13:00 to Close | 13:00 → 17:00 |
-
-Features:
-
-- % bars above/below/touching each level
-- mean/max distance above/below level
-- window TWAP and VWAP
-- TWAP/VWAP distance to level
-- composite state vs prior defined levels:
-  - `Above_All`
-  - `Below_All`
-  - `Between`
-
-Summaries test whether path context relates to:
-
-- next-session direction/return
-- daily close above/below level
-- daily bullish/bearish close
-- Monday/Tuesday path → weekly high/low distribution
-
-Output paths:
-
-```text
-output/research_events/relative_path_es/
-output/research_events/relative_path_nq/
-```
+Measures time/distance above/below/touching each key level, window TWAP/VWAP, TWAP/VWAP distance to level, and composite state vs prior defined levels.
 
 </details>
 
@@ -273,7 +273,7 @@ Generated outputs are local artifacts and ignored by git, except tracked README 
 
 ```text
 output/
-├── examples/                              # tracked README gallery PNGs
+├── examples/                              # tracked README result PNGs + summary CSVs
 ├── *.png                                  # standard weekly charts
 └── research_events/
     ├── intraday_levels/
@@ -287,13 +287,7 @@ output/
 </details>
 
 <details>
-<summary><strong>Common commands</strong></summary>
-
-Run the default ES research pass:
-
-```bash
-python3 analysis.py
-```
+<summary><strong>Tests and project files</strong></summary>
 
 Run tests:
 
@@ -302,27 +296,14 @@ python3 -m pytest -q tests/test_event_research.py tests/test_readme_examples.py
 python3 -m py_compile analysis.py scripts/build_readme_examples.py
 ```
 
-Regenerate README images:
-
-```bash
-python3 scripts/build_readme_examples.py --data data/es_1m.parquet
-```
-
-Run NQ-specific research by changing `SYMBOL` and `DATA_PATH`, or by calling research functions directly with `data/nq_1m.parquet`.
-
-</details>
-
-<details>
-<summary><strong>Project files</strong></summary>
-
 | Path | Purpose |
 | --- | --- |
 | `po3_research/research.py` | research implementation |
 | `analysis.py` | backward-compatible runner/import wrapper |
-| `scripts/build_readme_examples.py` | reproducible README gallery generator |
+| `scripts/build_readme_examples.py` | reproducible README result generator |
 | `tests/test_event_research.py` | regression/unit tests for research helpers |
-| `tests/test_readme_examples.py` | gallery metadata and script-entry tests |
+| `tests/test_readme_examples.py` | README artifact metadata and script-entry tests |
 | `data/` | local parquet data, ignored by git |
-| `output/` | generated charts/tables, mostly ignored by git |
+| `output/examples/` | tracked README result artifacts |
 
 </details>
