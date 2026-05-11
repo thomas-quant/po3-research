@@ -1,22 +1,8 @@
 # PO3 Research — Futures Path & Weekly Extreme Analysis
 
-Research toolkit for studying ES and NQ futures structure from 1-minute OHLCV data. The project started as weekly high/low timing research and now includes intraday key-level retaps, forward-touch probabilities, path dependency, TWAP/VWAP context, and early-week signals that relate intraday behavior to weekly distributions.
+Research toolkit for studying ES and NQ futures structure from 1-minute OHLCV data. It measures weekly high/low timing, online extreme formation, weekly-open revisits, intraday key-level retaps, forward-touch probabilities, intraday → weekly path dependency, and relative path context around key opens.
 
-Data is intentionally not tracked in git. Expected local files:
-
-- `data/es_1m.parquet`
-- `data/nq_1m.parquet`
-
-Current data schema is UTC-first:
-
-| Column | Notes |
-| --- | --- |
-| `datetime_utc` | timezone-aware UTC timestamp |
-| `Open`, `High`, `Low`, `Close`, `Volume` | 1-minute OHLCV |
-
-Legacy schemas with `DateTime_ET` / `DateTime_UTC` are still supported.
-
----
+This repository is research infrastructure, not a trading system. Outputs are descriptive and conditional distributions for reasoning about futures path structure.
 
 ## Quick Start
 
@@ -24,7 +10,7 @@ Legacy schemas with `DateTime_ET` / `DateTime_UTC` are still supported.
 python3 analysis.py
 ```
 
-Default config in `analysis.py`:
+Default config lives in `po3_research/research.py` and is re-exported by `analysis.py`:
 
 ```python
 SYMBOL = "ES"
@@ -33,29 +19,97 @@ RESAMPLE_TO = "1h"
 OUTPUT_DIR = Path("output")
 ```
 
-To run NQ, change `SYMBOL` and `DATA_PATH`, or call the research functions directly with `data/nq_1m.parquet`.
+Expected local data:
 
-Dependencies:
+- `data/es_1m.parquet`
+- `data/nq_1m.parquet`
+
+Install dependencies in a virtual environment:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install pandas numpy matplotlib pyarrow pytest
 ```
 
----
+## README Example Gallery
 
-## Example Output
+These tracked images are generated from local ES data with `scripts/build_readme_examples.py`.
 
-The chart below shows an example forward-touch distribution: after each 15-minute bucket, what is the probability ES retaps the NY midnight open before the same trading day ends?
+| Research view | Example |
+| --- | --- |
+| Weekly low weekday distribution | ![ES weekly low weekday distribution](output/examples/es_weekly_low_day_distribution.png) |
+| Weekly high weekday distribution | ![ES weekly high weekday distribution](output/examples/es_weekly_high_day_distribution.png) |
+| Weekly extreme hour distribution | ![ES weekly extreme hour distribution](output/examples/es_weekly_extreme_hour_distribution.png) |
+| Day × session timing heatmap | ![ES weekly day session heatmap](output/examples/es_weekly_day_session_heatmap.png) |
+| Midnight-open forward-touch probability | ![ES midnight open forward-touch probability](output/examples/es_midnight_open_forward_touch_15m.png) |
+| Relative path context before 09:30 | ![ES relative path context summary](output/examples/es_relative_path_context_summary.png) |
 
-![ES midnight open forward-touch probability](output/examples/es_midnight_open_forward_touch_15m.png)
+Regenerate the gallery:
 
----
+```bash
+python3 scripts/build_readme_examples.py \
+  --symbol ES \
+  --data data/es_1m.parquet \
+  --output-dir output/examples \
+  --resample-to 1h
+```
 
-## What This Research Measures
+<details>
+<summary><strong>Data schema and time conventions</strong></summary>
 
-### 1. Weekly extreme timing
+## Data Schema
 
-Builds Monday-anchored futures weeks and measures when the weekly high/low forms:
+Current schema is UTC-first:
+
+| Column | Notes |
+| --- | --- |
+| `datetime_utc` | timezone-aware UTC timestamp |
+| `Open`, `High`, `Low`, `Close`, `Volume` | 1-minute OHLCV |
+
+Legacy schemas with `DateTime_ET` / `DateTime_UTC` are still supported by loader helpers.
+
+## Timezone
+
+All session, key-level, trading-day, and weekly grouping logic converts source timestamps to `America/New_York`.
+
+## Futures Trading Week
+
+Use `trading_week_monday(ts)`. Do not use `pd.Grouper(freq="W-MON")`; it creates Tuesday → Monday buckets and misclassifies Monday extremes.
+
+## Intraday Trading Day
+
+Use `intraday_trading_day(ts)` or `intraday_trading_day_index(index)`:
+
+- 18:00 ET and later belongs to the next RTH date.
+- Key opens use New York time.
+
+## Sessions
+
+| Session | ET hours |
+| --- | --- |
+| Asia | 19:00–00:00 |
+| London | 00:00–09:00 |
+| NY AM | 09:00–12:00 |
+| NY PM | 12:00–16:00 |
+| Other | 16:00–19:00 |
+
+## Train/OOS Split
+
+`TRAIN_END = 2023-12-31 America/New_York`.
+
+Train quantiles define p25/p75 buckets. Those fixed thresholds then apply to OOS rows.
+
+</details>
+
+<details>
+<summary><strong>Research modules</strong></summary>
+
+## 1. Weekly Extreme Timing
+
+Builds Monday-anchored futures weeks and measures when the weekly high/low forms.
+
+Outputs include:
 
 - weekday distribution
 - session distribution
@@ -70,9 +124,11 @@ Core functions:
 - `build_weekly(df)`
 - `run_experiment(...)`
 
-### 2. Online weekly event distribution
+## 2. Online Weekly Event Distribution
 
-Builds one row per week × bar to study whether weekly high/low has formed yet, using only path-state features known at that point:
+Builds one row per week × bar to study whether weekly high/low has formed yet, using only path-state features known at that point.
+
+Features include:
 
 - developing weekly range
 - close location in developing range
@@ -89,9 +145,9 @@ Output path:
 output/research_events/
 ```
 
-### 3. Weekly-open revisits
+## 3. Weekly-Open Revisits
 
-Uses 1-minute data to measure when price revisits the weekly open.
+Measures when price revisits the weekly open.
 
 Definition:
 
@@ -99,9 +155,13 @@ Definition:
 - revisit = `Low <= weekly_open <= High`
 - Sunday evening excluded from revisit counting
 - Monday only counts from 09:30 ET onward
-- timing buckets are learned from train quantiles, with OOS validation
+- timing buckets learned from train quantiles, then validated on OOS
 
-### 4. Intraday key-level retaps
+Function:
+
+- `build_weekly_open_revisit_rows(df_1m, weekly=None)`
+
+## 4. Intraday Key-Level Retaps
 
 Studies daily key opens:
 
@@ -112,17 +172,15 @@ Studies daily key opens:
 | NY 09:30 open | 09:30 |
 | NY 13:00 open | 13:00 |
 
-Trading day convention: 18:00 ET belongs to the next RTH date.
-
 Measures:
 
-- whether each level is revisited same trading day
+- same-day revisit rate
 - first revisit session/hour
 - total touch bars by session
 - day close above/below level
-- day bullish/bearish
-- high/low already formed at revisit
-- post-revisit excursions
+- day bullish/bearish state
+- whether high/low already formed at revisit
+- post-revisit high/low excursions
 
 Output path:
 
@@ -130,7 +188,7 @@ Output path:
 output/research_events/intraday_levels/
 ```
 
-### 5. Forward-touch probabilities
+## 5. Forward-Touch Probabilities
 
 For each key level and later bucket, estimates:
 
@@ -146,9 +204,9 @@ Examples:
 
 Outputs include 15-minute and 1-hour bucket tables.
 
-### 6. Intraday → weekly path dependency
+## 6. Intraday → Weekly Path Dependency
 
-Links intraday behavior around key levels to weekly outcomes.
+Links intraday key-level behavior to weekly outcomes.
 
 Metrics bucketed with train p25/p75 quantiles:
 
@@ -170,9 +228,9 @@ output/research_events/path_dependency_es/
 output/research_events/path_dependency_nq/
 ```
 
-### 7. Relative path, TWAP/VWAP, and composite context
+## 7. Relative Path, TWAP/VWAP, and Composite Context
 
-Measures how much time/distance price spends around key levels during pre-session windows:
+Measures how much time/distance price spends around key levels during pre-session windows.
 
 | Window | ET range |
 | --- | --- |
@@ -187,12 +245,12 @@ Features:
 - mean/max distance above/below level
 - window TWAP and VWAP
 - TWAP/VWAP distance to level
-- composite state vs all prior defined levels:
+- composite state vs prior defined levels:
   - `Above_All`
   - `Below_All`
   - `Between`
 
-Summaries test whether path context predicts:
+Summaries test whether path context relates to:
 
 - next-session direction/return
 - daily close above/below level
@@ -206,32 +264,16 @@ output/research_events/relative_path_es/
 output/research_events/relative_path_nq/
 ```
 
----
+</details>
 
-## Time & Session Handling
+<details>
+<summary><strong>Output layout</strong></summary>
 
-All research is expressed in New York time. UTC source data is converted to `America/New_York`.
-
-Sessions:
-
-| Session | ET hours |
-| --- | --- |
-| Asia | 19:00–00:00 |
-| London | 00:00–09:00 |
-| NY AM | 09:00–12:00 |
-| NY PM | 12:00–16:00 |
-| Other | 16:00–19:00 |
-
-Trading week handling is custom. Do not use `pd.Grouper(freq="W-MON")`; it creates Tuesday→Monday buckets. Use `trading_week_monday(ts)` instead.
-
----
-
-## Important Outputs
-
-Generated outputs are local artifacts and ignored by git.
+Generated outputs are local artifacts and ignored by git, except tracked README examples in `output/examples/`.
 
 ```text
 output/
+├── examples/                              # tracked README gallery PNGs
 ├── *.png                                  # standard weekly charts
 └── research_events/
     ├── intraday_levels/
@@ -242,28 +284,45 @@ output/
     └── relative_path_nq/
 ```
 
----
+</details>
 
-## Tests
+<details>
+<summary><strong>Common commands</strong></summary>
+
+Run the default ES research pass:
 
 ```bash
-python3 -m pytest -q tests/test_event_research.py
-python3 -m py_compile analysis.py
+python3 analysis.py
 ```
 
-The tests cover:
+Run tests:
 
-- UTC/ET data loading
-- futures week and trading-day mapping
-- weekly event rows
-- weekly-open revisits
-- intraday key-level revisits
-- forward-touch probabilities
-- path-dependency buckets
-- relative path TWAP/VWAP/composite features
+```bash
+python3 -m pytest -q tests/test_event_research.py tests/test_readme_examples.py
+python3 -m py_compile analysis.py scripts/build_readme_examples.py
+```
 
----
+Regenerate README images:
 
-## Notes
+```bash
+python3 scripts/build_readme_examples.py --data data/es_1m.parquet
+```
 
-This is research infrastructure, not a trading system. Outputs are descriptive/conditional distributions intended to help reason about futures path structure, not standalone trade signals.
+Run NQ-specific research by changing `SYMBOL` and `DATA_PATH`, or by calling research functions directly with `data/nq_1m.parquet`.
+
+</details>
+
+<details>
+<summary><strong>Project files</strong></summary>
+
+| Path | Purpose |
+| --- | --- |
+| `po3_research/research.py` | research implementation |
+| `analysis.py` | backward-compatible runner/import wrapper |
+| `scripts/build_readme_examples.py` | reproducible README gallery generator |
+| `tests/test_event_research.py` | regression/unit tests for research helpers |
+| `tests/test_readme_examples.py` | gallery metadata and script-entry tests |
+| `data/` | local parquet data, ignored by git |
+| `output/` | generated charts/tables, mostly ignored by git |
+
+</details>
