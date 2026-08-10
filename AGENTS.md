@@ -168,9 +168,11 @@ These have all been fixed once. Do not reintroduce them.
    ladder — it prices the time of the maximum, not whether a fixed price is reached.
 12. **Magnitude conditioned on volatility state.** Any range target conditioned on any
    volatility-flavoured conditioner will "work", because volatility clusters. That is
-   GARCH, not path structure. Report magnitude as `Window_Range_Ratio` — the range over
-   the PRIOR SESSION's same window — beside the raw range; a conditioner that only
-   rediscovers clustering moves the raw column and leaves the ratio flat. Watch the
+   GARCH, not path structure. Report magnitude as `Window_Log_Range_Ratio` — the log of
+   the range over the PRIOR SESSION's same window — beside the raw range; a conditioner
+   that only rediscovers clustering moves the raw column and leaves the ratio flat.
+   Report the ratio in LOGS: the level form is bounded at 0 and unbounded above, so a
+   mean over it is dragged by the right tail, and hardest in the widest bucket. Watch the
    denominator: a conditioner whose observation period contains the prior session sits
    on both sides of the division and its ratio is mechanical, which is what
    `RATIO_DENOMINATOR_OVERLAP` and the `ratio_denominator_overlap` flag record.

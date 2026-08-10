@@ -453,9 +453,18 @@ defect module 10 shipped.
 **The volatility-clustering baseline.** Any magnitude target conditioned on any
 volatility-flavoured state will "work", because volatility clusters — that is GARCH,
 not path structure, and a raw range table cannot tell the two apart. So magnitude is
-reported twice: `Window_Range_Pct` raw, and `Window_Range_Ratio` over the *prior
-session's same window*. A conditioner that only rediscovers vol clustering moves the
-raw column and leaves the ratio flat. The ratio is the finding.
+reported twice: `Window_Range_Pct` raw, and `Window_Log_Range_Ratio` — the log of
+today's range over the *prior session's same window*. A conditioner that only
+rediscovers vol clustering moves the raw column and leaves the ratio flat. The ratio
+is the finding.
+
+The ratio is reported in logs, not levels. A raw range ratio is bounded below by 0
+and unbounded above — on ES it runs median 0.99, mean 1.19, max 11.4 — so a mean over
+it is dragged by the right tail, and the widest bucket is dragged hardest, which is
+exactly the bucket a magnitude claim rests on. `log(today/yesterday)` is symmetric
+about 0, and `exp(spread)` reads directly as the multiplicative factor between two
+conditioner buckets. The level form stays on the row detail as `Window_Range_Ratio`
+so the denominator is auditable.
 
 `window_conditioner_spreads.csv` is the table to read first. It carries a
 `ratio_denominator_overlap` flag: a conditioner whose own observation period contains

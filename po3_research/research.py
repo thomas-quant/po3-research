@@ -2874,13 +2874,20 @@ def run_month_context_research(symbol: str = None, path: str = DATA_PATH,
 # because volatility clusters. That is GARCH, not path structure, and a raw range
 # table cannot tell the two apart. So every magnitude target is reported twice:
 #
-#   Window_Range_Pct     raw, in percent of the window open
-#   Window_Range_Ratio   the same range over the PRIOR DAY's same-window range
+#   Window_Range_Pct        raw, in percent of the window open
+#   Window_Log_Range_Ratio  log(today's range / the PRIOR DAY's same-window range)
 #
 # A conditioner that only rediscovers vol clustering moves the raw column and leaves
 # the ratio flat. Only a conditioner that moves the ratio carries information the
 # previous day's range did not already have. The ratio is the finding; the raw column
 # is there so the ratio's denominator is auditable.
+#
+# The ratio is reported in LOGS, not levels. A raw range ratio is bounded below by 0
+# and unbounded above — on ES it runs median 0.99, mean 1.19, max 11.4 — so a mean of
+# it is dragged by the right tail and overstates every bucket, the widest bucket most.
+# log(today/yesterday) is symmetric about 0: -0.3 and +0.3 are the same size move in
+# opposite directions, and exp(spread) reads directly as a multiplicative factor.
+# `Window_Range_Ratio` stays on the row detail as the auditable level.
 
 WEEK_STATE_CONDITIONERS = [
     "Session_Index_In_Week",
@@ -2915,8 +2922,8 @@ RATIO_DENOMINATOR_OVERLAP = [
     # Overlaps on Mondays only, when the prior session falls in the prior week.
     "Prior_Week_Bull_Bear",
 ]
-# Magnitude first, then sign. `Window_Range_Ratio` is the one that has to move.
-WINDOW_MAGNITUDE_TARGETS = ["Window_Range_Pct", "Window_Range_Ratio",
+# Magnitude first, then sign. `Window_Log_Range_Ratio` is the one that has to move.
+WINDOW_MAGNITUDE_TARGETS = ["Window_Range_Pct", "Window_Log_Range_Ratio",
                             "Window_High_Excursion_Pct", "Window_Low_Excursion_Pct"]
 WINDOW_SIGNED_TARGETS = ["Window_Return_Pct", "Next_Window_Return_Pct"]
 WINDOW_BINARY_TARGETS = ["Window_Bullish"]
@@ -2924,7 +2931,8 @@ WINDOW_BINARY_TARGETS = ["Window_Bullish"]
 # never conditioners — the mirror of WHOLE_MONTH_LABELS, guarded by the same style
 # of test.
 WINDOW_OUTCOME_LABELS = (WINDOW_MAGNITUDE_TARGETS + WINDOW_SIGNED_TARGETS
-                         + WINDOW_BINARY_TARGETS + ["Window_Close", "Window_High", "Window_Low"])
+                         + WINDOW_BINARY_TARGETS
+                         + ["Window_Close", "Window_High", "Window_Low", "Window_Range_Ratio"])
 
 
 def is_window_outcome_label(column: str) -> bool:
@@ -3113,6 +3121,11 @@ def build_intraday_window_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
     rows = rows.sort_values(["Trading_Day", "Window_Order"]).reset_index(drop=True)
     denominator = rows["Prior_Day_Same_Window_Range_Pct"].replace(0.0, np.nan)
     rows["Window_Range_Ratio"] = rows["Window_Range_Pct"] / denominator
+    # A zero-range window is a data artifact (a halt, or a single bar), not a real
+    # contraction to nothing. log(0) would be -inf and would poison every mean it
+    # touched, so those rows drop out of the log target rather than dominating it.
+    rows["Window_Log_Range_Ratio"] = np.log(
+        rows["Window_Range_Ratio"].replace(0.0, np.nan))
 
     rows["Week_Start"] = trading_week_monday_index(pd.DatetimeIndex(rows["Trading_Day"]))
     return rows
@@ -3199,9 +3212,11 @@ def window_conditioner_spreads(summary: pd.DataFrame) -> pd.DataFrame:
     P75-High minus P25-Low per Split × Window × conditioner × target.
 
     This is the table to read first. A conditioner that only rediscovers volatility
-    clustering shows a wide `Window_Range_Pct` spread and a `Window_Range_Ratio`
+    clustering shows a wide `Window_Range_Pct` spread and a `Window_Log_Range_Ratio`
     spread near zero; only the ratio row is evidence of higher-timeframe information.
-    Two-bucket conditioners are skipped — the spread is defined on the quantile cut.
+    The ratio spread is in logs, so `exp(spread)` is the multiplicative factor between
+    the two buckets. Two-bucket conditioners are skipped — the spread is defined on
+    the quantile cut.
 
     `ratio_denominator_overlap` marks the rows where the ratio is not interpretable
     because the conditioner contains the prior session the ratio divides by; see
@@ -3233,7 +3248,7 @@ def window_conditioner_spreads(summary: pd.DataFrame) -> pd.DataFrame:
                 "spread": round(float(high) - float(low), 6),
                 "ci_disjoint": bool(hi_lo > lo_hi or indexed.loc["P75 High", target.replace("_mean", "_ci_high")] < indexed.loc["P25 Low", target.replace("_mean", "_ci_low")]),
                 "ratio_denominator_overlap": bool(
-                    target.startswith("Window_Range_Ratio")
+                    target.startswith("Window_Log_Range_Ratio")
                     and conditioner in RATIO_DENOMINATOR_OVERLAP),
             })
     out = pd.DataFrame.from_records(records)
@@ -3264,9 +3279,9 @@ def run_week_context_research(symbol: str = None, path: str = DATA_PATH,
 
     if not spreads.empty:
         train = spreads[spreads["Split"].eq("Train")]
-        print("\n[Research] Magnitude: raw range spread vs range-ratio spread (Train)")
-        print("  ratio spread is only interpretable where overlap=False")
-        pivot = train[train["Target"].isin(["Window_Range_Pct", "Window_Range_Ratio"])].copy()
+        print("\n[Research] Magnitude: raw range spread vs log-range-ratio spread (Train)")
+        print("  ratio spread is in logs; exp(spread) is the factor. Only interpretable where overlap=False")
+        pivot = train[train["Target"].isin(["Window_Range_Pct", "Window_Log_Range_Ratio"])].copy()
         pivot["Target"] = np.where(pivot["ratio_denominator_overlap"],
                                    pivot["Target"] + " (overlap)", pivot["Target"])
         print(pivot.pivot_table(index=["Window_Name", "Conditioner"], columns="Target",

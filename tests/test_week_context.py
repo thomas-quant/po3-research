@@ -146,6 +146,29 @@ def test_window_range_ratio_divides_by_the_prior_session_same_window():
             float(prior["Window_Range_Pct"].iloc[-1]))
         assert row["Window_Range_Ratio"] == pytest.approx(
             row["Window_Range_Pct"] / row["Prior_Day_Same_Window_Range_Pct"])
+        assert row["Window_Log_Range_Ratio"] == pytest.approx(
+            np.log(row["Window_Range_Ratio"]))
+
+
+def test_log_range_ratio_is_symmetric_and_survives_a_zero_range_window():
+    """
+    The log form is the headline because the level form is right-skewed: a mean over
+    ratios is dragged by the tail, and the widest bucket is dragged hardest. Halving
+    and doubling must be equal and opposite, and a zero-range window — a halt, not a
+    real contraction — must drop out rather than becoming -inf.
+    """
+    rows = pd.DataFrame({
+        "Window_Range_Pct": [1.0, 2.0, 0.0],
+        "Prior_Day_Same_Window_Range_Pct": [2.0, 1.0, 1.0],
+    })
+    ratio = rows["Window_Range_Pct"] / rows["Prior_Day_Same_Window_Range_Pct"]
+    log_ratio = np.log(ratio.replace(0.0, np.nan))
+
+    assert log_ratio.iloc[0] == pytest.approx(-log_ratio.iloc[1])
+    assert np.isnan(log_ratio.iloc[2])
+    # The level form has no such symmetry: 0.5 and 2.0 average to 1.25, not 1.0.
+    assert ratio.iloc[:2].mean() == pytest.approx(1.25)
+    assert log_ratio.iloc[:2].mean() == pytest.approx(0.0)
 
 
 def test_next_window_return_is_the_following_window_in_the_same_session():
@@ -179,8 +202,8 @@ def test_conditioners_containing_the_prior_session_are_flagged_on_the_ratio():
          "Conditioner_Value": value, "n": 100, "n_weeks": 20,
          "Window_Range_Pct_mean": mean, "Window_Range_Pct_ci_low": mean - 1,
          "Window_Range_Pct_ci_high": mean + 1,
-         "Window_Range_Ratio_mean": mean, "Window_Range_Ratio_ci_low": mean - 1,
-         "Window_Range_Ratio_ci_high": mean + 1,
+         "Window_Log_Range_Ratio_mean": mean, "Window_Log_Range_Ratio_ci_low": mean - 1,
+         "Window_Log_Range_Ratio_ci_high": mean + 1,
          "Window_High_Excursion_Pct_mean": mean, "Window_High_Excursion_Pct_ci_low": mean - 1,
          "Window_High_Excursion_Pct_ci_high": mean + 1,
          "Window_Low_Excursion_Pct_mean": mean, "Window_Low_Excursion_Pct_ci_low": mean - 1,
@@ -196,7 +219,7 @@ def test_conditioners_containing_the_prior_session_are_flagged_on_the_ratio():
     spreads = analysis.window_conditioner_spreads(summary)
 
     overlapped = spreads[spreads["Conditioner"].eq("Week_Range_So_Far_Pct")]
-    assert overlapped[overlapped["Target"].eq("Window_Range_Ratio")]["ratio_denominator_overlap"].all()
+    assert overlapped[overlapped["Target"].eq("Window_Log_Range_Ratio")]["ratio_denominator_overlap"].all()
     assert not overlapped[overlapped["Target"].eq("Window_Range_Pct")]["ratio_denominator_overlap"].any()
     # A conditioner measured entirely inside the current session cannot overlap.
     clean = spreads[spreads["Conditioner"].eq("Day_Range_To_Window_Open_Pct")]
