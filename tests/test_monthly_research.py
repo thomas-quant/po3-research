@@ -86,3 +86,73 @@ def test_week_of_month_buckets_calendar_days_into_w1_to_w5():
     assert analysis.week_of_month(pd.Timestamp("2026-03-07")) == "W1"
     assert analysis.week_of_month(pd.Timestamp("2026-03-08")) == "W2"
     assert analysis.week_of_month(pd.Timestamp("2026-03-29")) == "W5"
+
+
+def test_month_with_low_on_session_zero_and_high_on_the_last_session_maps_to_early_and_late():
+    sessions = _weekday_sessions_in_month(2026, 3, 22)
+    prices = [90.0] + [100.0] * 20 + [110.0]
+
+    monthly = analysis.build_monthly(_hourly_frame(sessions, prices))
+
+    row = monthly.iloc[0]
+    assert row["N_Sessions"] == 22
+    assert row["Low_Session_Index"] == 0
+    assert row["High_Session_Index"] == 21
+    assert row["Low_Third"] == "Early"
+    assert row["High_Third"] == "Late"
+    assert row["Low_Quintile"] == "Q1"
+    assert row["High_Quintile"] == "Q5"
+    assert row["Low_Session_Pos"] == 0.0
+    assert row["High_Session_Pos"] == 1.0
+
+
+def test_months_of_different_lengths_share_one_normalized_position():
+    july = _weekday_sessions_in_month(2026, 7, 23)
+    august = _weekday_sessions_in_month(2026, 8, 19)
+    assert (len(july), len(august)) == (23, 19)
+    july_prices = [100.0] * 23
+    july_prices[11] = 120.0                      # 11 / 22 == 0.5
+    august_prices = [100.0] * 19
+    august_prices[9] = 120.0                     # 9 / 18 == 0.5
+    frame = pd.concat([
+        _hourly_frame(july, july_prices), _hourly_frame(august, august_prices)]).sort_index()
+
+    monthly = analysis.build_monthly(frame).set_index("Month_Of_Year")
+
+    assert monthly.loc[7, "High_Session_Index"] == 11
+    assert monthly.loc[8, "High_Session_Index"] == 9
+    assert monthly.loc[7, "High_Session_Pos"] == monthly.loc[8, "High_Session_Pos"] == 0.5
+
+
+def test_partial_first_and_last_months_are_flagged_and_dropped():
+    """The rate side of this — that every share uses the complete months as its
+    denominator — is asserted in test_monthly_share_table_reports_n_ci_and_a_sparse_flag_per_bucket."""
+    months = [
+        _weekday_sessions_in_month(2026, 1, 21),
+        _weekday_sessions_in_month(2026, 2, 20),
+        _weekday_sessions_in_month(2026, 3, 22),
+        _weekday_sessions_in_month(2026, 4, 22),
+    ]
+    frame = pd.concat([_hourly_frame(m) for m in months]).sort_index()
+
+    monthly = analysis.build_monthly(frame)
+    complete = analysis.complete_months(monthly)
+
+    assert list(monthly["Month_Of_Year"]) == [1, 2, 3, 4]
+    assert list(monthly["Is_Partial"]) == [True, False, False, True]
+    assert list(complete["Month_Of_Year"]) == [2, 3]
+
+
+def test_monthly_rows_carry_prior_month_direction():
+    january = _weekday_sessions_in_month(2026, 1, 21)
+    february = _weekday_sessions_in_month(2026, 2, 20)
+    frame = pd.concat([
+        _hourly_frame(january, [100.0 + i for i in range(21)]),   # bullish
+        _hourly_frame(february, [100.0 - i for i in range(20)]),  # bearish
+    ]).sort_index()
+
+    monthly = analysis.build_monthly(frame)
+
+    assert list(monthly["Bull_Bear"]) == ["Bullish", "Bearish"]
+    assert pd.isna(monthly.iloc[0]["Prev_Bull_Bear"])
+    assert monthly.iloc[1]["Prev_Bull_Bear"] == "Bullish"

@@ -1598,6 +1598,91 @@ def run_relative_path_research(symbol: str = None, path: str = DATA_PATH, output
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MONTHLY AGGREGATION & EXTREME TIMING
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Monthly outputs carry NO train/OOS split. The ES sample holds 194 months against
+# 841 weeks; a 2023-12-31 split leaves 31 OOS months, so a five-way conditional cut
+# gives ~6 observations per cell. Reporting that as out-of-sample validation would
+# manufacture confidence the sample cannot support. Every figure instead carries n,
+# a bootstrap 95% CI, and is_sparse against SPARSE_MONTHS. No "strongest cell"
+# ranking is produced: with ~16 observations per month-of-year, a top-N of a wide
+# grid is noise mining.
+
+
+def build_monthly(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per session month, with extreme timing expressed as session position.
+
+    A session month holds every bar whose session date falls in that calendar
+    month, so it opens on the 18:00 ET print of the last session of the previous
+    month. Position features are 0-based indexes into the month's ordered session
+    list, normalized by length, so months holding 13–24 sessions stay comparable.
+
+    `N_Sessions` comes from the exchange calendar, not from price. It is published
+    in advance, so normalized position does not violate the knowability rule that
+    governs the month-state conditioners.
+    """
+    if df.empty:
+        return pd.DataFrame()
+    month_keys = trading_month_start_index(df.index)
+    sessions = pd.Series(intraday_trading_day_index(df.index), index=df.index)
+    first_month, last_month = month_keys.min(), month_keys.max()
+
+    records = []
+    for month_start, m in df.groupby(month_keys, sort=True):
+        if len(m) < 2:
+            continue
+        m = m.sort_index()
+        month_sessions = sessions.loc[m.index]
+        ordered = pd.DatetimeIndex(pd.unique(month_sessions))
+        n_sessions = len(ordered)
+        position = {session: i for i, session in enumerate(ordered)}
+        month_open = float(m["Open"].iloc[0])
+        month_close = float(m["Close"].iloc[-1])
+        rec = {
+            "Month_Start": month_start,
+            "Month_Of_Year": int(month_start.month),
+            "N_Sessions": n_sessions,
+            # The sample starts and ends mid-month; both edge months would otherwise
+            # contribute a truncated high/low. They are excluded from every rate.
+            "Is_Partial": bool(month_start == first_month or month_start == last_month),
+            "Bull_Bear": "Bullish" if month_close > month_open else "Bearish",
+            "Monthly_Open": month_open,
+            "Monthly_Close": month_close,
+            "Monthly_High": float(m["High"].max()),
+            "Monthly_Low": float(m["Low"].min()),
+        }
+        for label, ts in (("High", m["High"].idxmax()), ("Low", m["Low"].idxmin())):
+            session = month_sessions.loc[ts]
+            index = position[session]
+            rec.update({
+                f"{label}_Session_Index": index,
+                f"{label}_Session_Pos": round(index / (n_sessions - 1), 6) if n_sessions > 1 else 0.0,
+                f"{label}_Third": _position_bucket(index, n_sessions, MONTH_THIRDS),
+                f"{label}_Quintile": _position_bucket(index, n_sessions, MONTH_QUINTILES),
+                f"{label}_Week_Of_Month": week_of_month(session),
+                f"{label}_Weekday": trading_weekday(ts),
+                f"{label}_Session": session_of(ts),
+                f"{label}_Hour": int(ts.hour),
+                f"{label}_Day_Of_Month": int(session.day),
+            })
+        records.append(rec)
+
+    out = pd.DataFrame.from_records(records)
+    if not out.empty:
+        out["Prev_Bull_Bear"] = out["Bull_Bear"].shift(1)
+    return out
+
+
+def complete_months(monthly: pd.DataFrame) -> pd.DataFrame:
+    """Drop the truncated first and last months; they cannot hold a real high/low."""
+    if monthly.empty:
+        return monthly
+    return monthly[~monthly["Is_Partial"].astype(bool)].copy()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
