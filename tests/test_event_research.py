@@ -774,3 +774,43 @@ def test_weekly_open_revisit_outcomes_report_monday_extremes():
 
     assert out.iloc[0]["low_monday_pct"] == 100.0
     assert out.iloc[0]["high_monday_pct"] == 50.0
+
+
+# ── Cluster bootstrap ───────────────────────────────────────────────────────
+
+def test_cluster_bootstrap_is_wider_than_the_row_bootstrap_on_correlated_rows():
+    # 10 weeks, 20 bars each; every bar in a week carries that week's outcome.
+    outcomes = [True] * 5 + [False] * 5
+    values = pd.Series([o for o in outcomes for _ in range(20)])
+    weeks = pd.Series([w for w in range(10) for _ in range(20)])
+
+    naive = analysis.bootstrap_probability_ci(values, n_resamples=400, seed=1)
+    clustered = analysis.bootstrap_probability_ci(values, n_resamples=400, seed=1, clusters=weeks)
+
+    assert naive["probability"] == clustered["probability"] == 50.0
+    assert naive["n"] == clustered["n"] == 200
+    assert clustered["n_clusters"] == 10
+    naive_width = naive["ci_high"] - naive["ci_low"]
+    clustered_width = clustered["ci_high"] - clustered["ci_low"]
+    assert clustered_width > naive_width * 2
+
+
+def test_conditional_event_distribution_clusters_on_week_and_flags_sparse_by_week():
+    rows = pd.DataFrame(
+        {
+            "Split": ["Train"] * 60,
+            "Week_Start": [w for w in range(3) for _ in range(20)],
+            "Close_Location_Bucket": ["Upper"] * 60,
+            "Is_Final_High_Event": [True] * 20 + [False] * 40,
+        }
+    )
+
+    dist = analysis.conditional_event_distribution(
+        rows, event_col="Is_Final_High_Event", condition_cols=["Close_Location_Bucket"], n_resamples=100, seed=3
+    )
+    row = dist.iloc[0]
+
+    assert row["n"] == 60
+    assert row["n_clusters"] == 3
+    # 3 independent weeks is sparse even though 60 bar-rows is not.
+    assert bool(row["is_sparse"]) is True
