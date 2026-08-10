@@ -209,3 +209,32 @@ def test_targets_with_no_observations_are_not_emitted():
     assert "Next session bullish" not in set(summary["Target"])
     assert "Next session positive return" not in set(summary["Target"])
     assert summary["Baseline_Pct"].notna().all()
+
+
+def test_globex_midnight_findings_score_both_targets_per_split():
+    days = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"]).tz_localize("America/New_York")
+    rows = pd.DataFrame(
+        {
+            "Trading_Day": list(days) * 2,
+            "Split": ["Train"] * 8,
+            "Window_Name": ["Globex_to_Midnight"] * 8,
+            "Level_Name": ["Globex_Open"] * 4 + ["NY_Midnight_Open"] * 4,
+            "Level_Value": [100, 100, 100, 100] + [101, 99, 101, 99],
+            "Day_Bullish": [True, False, True, False] * 2,
+            "Day_Close_Above_Level": [True, False, True, False] * 2,
+        }
+    )
+
+    from scripts.build_readme_examples import build_globex_midnight_findings
+
+    out = pd.DataFrame(build_globex_midnight_findings("ES", rows))
+
+    assert set(out["Metric"]) == {
+        "Globex to midnight state — Full day bullish",
+        "Globex to midnight state — Midnight to close positive",
+    }
+    above = out[out["Metric"].str.endswith("Full day bullish") & out["Segment"].eq("midnight above globex")].iloc[0]
+    below = out[out["Metric"].str.endswith("Full day bullish") & out["Segment"].eq("midnight at or below globex")].iloc[0]
+    assert above["Value"] == 100.0
+    assert below["Value"] == 0.0
+    assert "n=2" in above["Context"]
