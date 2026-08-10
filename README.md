@@ -379,9 +379,10 @@ leaves 31 OOS months, so a five-way conditional cut gives ~6 observations per ce
 Every figure instead carries `n`, a bootstrap 95% CI, and `is_sparse` against
 `SPARSE_MONTHS = 20`. No "strongest cell" ranking table is produced.
 
-The week-of-month table carries `months_present` and `avg_sessions`. W5 exists in
-only about 41 of 192 months and spans ~2 sessions against W1–W4's ~5, so its share
-is not comparable to theirs — and at n=41 the sparse flag alone would not say so.
+The week-of-month table carries `months_present` and `avg_sessions`. W5 is days
+29–31, so it spans ~2.0 sessions against W1–W4's ~4.9 and is missing outright from
+24 of the 192 complete months. Its share is still scored against all 192, so it is
+not comparable to theirs — and at n=51 the sparse flag alone would not say so.
 
 ## 9. Monthly Levels
 
