@@ -4,6 +4,21 @@ Research toolkit for measuring ES and NQ futures path structure from 1-minute OH
 
 This is research infrastructure, not a trading system. “Predictive” means conditional association vs baseline in the sample, not a standalone trade rule.
 
+> **Results below are stale — regeneration pending.** The tracked charts and tables in
+> `output/examples/` were generated on 2026-05-11. Since then the local parquet gained
+> about two months of data, and the methodology was corrected in several places that
+> move these numbers:
+>
+> | Change | Effect on the tables below |
+> | --- | --- |
+> | Weekday now rolls at 18:00 ET instead of the calendar day | Weekly-extreme weekday shares change; Monday no longer carries two overnight sessions |
+> | Weekly targets restricted to Monday/Tuesday rows | The TWAP/VWAP residual-edge table was computed by pooling all weekdays, including Friday rows where the weekly label is contemporaneous |
+> | "Next session" no longer means "day close" | Any next-session figure predates the fix |
+> | `Day bullish` dropped for `Globex_Open` as tautological | That level's day-direction row disappears from the matrix |
+>
+> Re-run the command in [Reproduce These Results](#reproduce-these-results) for current
+> numbers. The method descriptions further down describe the *current* code.
+
 ## Key Findings From Current ES/NQ Sample
 
 ### Weekly extremes skew toward Monday lows and Friday highs
@@ -30,6 +45,11 @@ Positive Globex→Midnight change is a strong classifier for the full-day bullis
 | NQ | OOS | 54.41% | 63.61% | 43.60% | 53.86% | 53.74% | 54.00% |
 
 Takeaway: “Midnight above Globex” mostly says the day is already bullish relative to the Globex open. It is useful as an early day-state label, but the forward-only Midnight→Close test shows little/no continuation edge.
+
+Note: the ES Train row repeats 54.63% in both baseline columns. Those are separate
+quantities and recomputation puts them about a point apart, so that cell is a
+transcription error. This table is now generated into `readme_findings_summary.csv`,
+so the next regeneration will replace it.
 
 ### Midnight-open retaps remain common after the cash open
 
@@ -101,17 +121,32 @@ python3 scripts/build_readme_examples.py \
 
 Generated summary tables:
 
-- `output/examples/readme_findings_summary.csv`
-- `output/examples/readme_twap_vwap_predictive_summary.csv`
+- `output/examples/readme_findings_summary.csv` — every numbered finding above, including
+  the Globex→Midnight state table, with the sample size behind each figure
+- `output/examples/readme_twap_vwap_predictive_summary.csv` — the full TWAP/VWAP matrix,
+  with `Weekday_Scope` and `n_weeks` per row
 
-Run the full default ES research pass:
+Run the research modules for a symbol:
 
 ```bash
-python3 analysis.py
+# every module, ES
+python3 -m po3_research --symbol ES --data data/es_1m.parquet
+
+# a subset, NQ
+python3 -m po3_research --symbol NQ --data data/nq_1m.parquet \
+  --modules relative_path path_dependency
 ```
+
+Modules: `weekly_charts`, `weekly_events`, `weekly_open_revisit`, `intraday_levels`,
+`path_dependency`, `relative_path`, `monthly_extremes`, `monthly_levels`,
+`month_context`. Output is written per symbol, so ES and NQ runs do not overwrite
+each other. `python3 analysis.py` still works and accepts the same flags.
 
 <details>
 <summary><strong>How TWAP/VWAP predictive power is measured</strong></summary>
+
+Only matched level/window pairs are scored — a level is never measured against a
+window that closes before the level exists.
 
 For each key level and its matching forward window:
 
@@ -135,6 +170,19 @@ Targets:
 - week bullish %
 - weekly high Friday %
 - weekly low Monday %
+
+Scoring rules:
+
+- **Weekly targets use Monday/Tuesday rows only** (`Weekday_Scope` column). Later in the
+  week a weekly label describes the session being measured rather than following it.
+- `n_weeks` is reported next to `n`. One weekly label repeats across up to five day-rows,
+  so `n` overstates how many independent observations there are.
+- A target identical to the level's own close state is dropped. For `Globex_Open` the
+  level value is the day open, so "day bullish" and "day closes above the level" are the
+  same column.
+- A window with no following session (every `1300_to_Close` row) contributes no
+  next-session observation. It is excluded, not scored as a negative.
+- "Next session" is the next contiguous session block after the window, not the day close.
 
 For each split, level, window, signal, and target:
 
@@ -171,12 +219,34 @@ All session, key-level, trading-day, and weekly grouping logic converts source t
 
 Use `trading_week_monday(ts)`. Do not use `pd.Grouper(freq="W-MON")`; it creates Tuesday → Monday buckets and misclassifies Monday extremes.
 
-## Intraday Trading Day
+## Session Date — One Definition Everywhere
 
-Use `intraday_trading_day(ts)` or `intraday_trading_day_index(index)`:
+The session date rolls at 18:00 ET. `trading_weekday(ts)` and `intraday_trading_day(ts)`
+both use it: Sunday 18:00 and Monday 09:30 are both Monday, Monday 19:00 is Tuesday.
 
-- 18:00 ET and later belongs to the next RTH date.
-- Key opens use New York time.
+That matters for the weekly-extreme tables. Attributing bars by calendar day instead
+gives each weekday a different amount of exposure:
+
+| | Mon | Tue | Wed | Thu | Fri |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Calendar day, hours/week | 28.5 | 23.2 | 23.2 | 22.9 | 17.0 |
+| Session date, hours/week | 23 | 23 | 23 | 23 | 23 |
+
+Under calendar attribution Monday absorbs both Sunday's overnight session and its own,
+while Friday stops at the 17:00 close — so a uniform null is 24.9% for Monday and 14.6%
+for Friday, not 20% each. Session-date attribution removes that.
+
+## Session Month
+
+A month is a **session month**: it holds every bar whose session date falls in that
+calendar month. August 2025 therefore opens at the 18:00 ET Globex print on 31 July
+and closes at the 17:00 ET print on 29 August. `trading_month_start(ts)` returns the
+calendar anchor, mirroring `trading_week_monday(ts)`.
+
+The first and last months of the sample are truncated and are excluded from every
+rate (`Is_Partial`).
+
+Key opens use New York time.
 
 ## Sessions
 
@@ -230,8 +300,13 @@ Features include:
 - prior high/low break state
 - range expansion bucket
 - train/OOS split
-- bootstrap confidence intervals
+- bootstrap confidence intervals, clustered on the week
 - survival curves and remaining-event distributions
+
+CIs and the sparse flag count independent weeks (`n_clusters`), not bars: a week
+contributes ~120 correlated rows and exactly one event. `strongest_excess_distributions`
+is still a top-10 shortlist out of ~75 cells with no multiple-comparison correction —
+treat it as a place to look, not a result.
 
 Output path:
 
@@ -278,9 +353,163 @@ Outputs include 15-minute and 1-hour bucket tables.
 
 Links intraday key-level behavior to weekly outcomes using train p25/p75 buckets for minutes to revisit, touch count, and post-revisit excursions.
 
+Summaries are keyed by weekday and report `n_weeks` alongside `n`. A weekly label is
+forward-looking for a Monday row and contemporaneous for a Friday one, and one label
+repeats across up to five day-rows.
+
 ## 7. Relative Path, TWAP/VWAP, and Composite Context
 
 Measures time/distance above/below/touching each key level, window TWAP/VWAP, TWAP/VWAP distance to level, and composite state vs prior defined levels.
+
+Every key level is crossed with every window, so 3 of the 16 combinations per day
+describe a level that does not exist until after the window closes. Those rows carry
+`Level_Defined_By_Window_End = False` and are excluded from the summaries by default
+(`drop_lookahead_level_windows`); the detail CSV keeps them for inspection.
+
+## 8. Monthly Extreme Timing
+
+When in a session month the monthly high and low form. Primary cuts are session
+position — thirds and quintiles of the month's ordered session list — so months
+holding 13 to 24 sessions stay comparable. Week-of-month, weekday, session and
+day-of-month are secondary views.
+
+**Monthly results carry no train/OOS split and are labelled descriptive, not
+validated.** The ES sample holds 194 months against 841 weeks; a 2023-12-31 split
+leaves 31 OOS months, so a five-way conditional cut gives ~6 observations per cell.
+Every figure instead carries `n`, a bootstrap 95% CI, and `is_sparse` against
+`SPARSE_MONTHS = 20`. No "strongest cell" ranking table is produced.
+
+The week-of-month table carries `months_present` and `avg_sessions`. W5 is days
+29–31, so it spans ~2.0 sessions against W1–W4's ~4.9 and is missing outright from
+24 of the 192 complete months. Its share is still scored against all 192, so it is
+not comparable to theirs — and at n=51 the sparse flag alone would not say so.
+
+The Late/Early split must be read against the arcsine and random-walk nulls, not
+against a uniform 33.3%. See the **Null models** section below for the ladder that
+prices in randomness, drift, volatility and the real return distribution.
+
+## 9. Monthly Levels
+
+`Monthly_Open`, `Prior_Month_High`, `Prior_Month_Low`, `Prior_Month_Close` — one
+price each that stays live for a whole month, so they get their own builder rather
+than an entry in `KEY_LEVEL_TIMES`.
+
+Touch counting starts at 09:30 ET on the month's first RTH session
+(`MONTHLY_LEVEL_COUNT_FROM`). Without that guard the monthly-open retap rate is
+~100% and carries no information: the 18:00 print is set in thin hours and is
+retested within minutes. This is the monthly analogue of the Monday 09:30 rule on
+weekly-open revisits.
+
+Forward-touch probability — level touched from session `k` through month end — is
+reported on two axes: raw session index, where `n` falls away past ~19 sessions, and
+normalized decile, where every month contributes to every bucket.
+
+## 10. Month-State Context
+
+Month-state attaches to the existing intraday and weekly rows as a conditioner:
+month of year, session position in month, third, quintile, week of month,
+month-to-date return, state versus the monthly open, and prior-month direction.
+Weekly rows take their state from the Monday's session and carry a
+`Straddles_Month_Boundary` flag; roughly a third of trading weeks span two months.
+
+Two rules govern it:
+
+- **Knowability.** A conditioner must be knowable at the time of the row it
+  conditions. Prior-month and month-to-date features qualify; the month's eventual
+  direction, high, low or close do not. Enforced by the `MONTH_STATE_CONDITIONERS`
+  allow-list and a test asserting no whole-month label is in it.
+- **Scope.** Monthly targets are scored on `Third_In_Month == Early` rows only,
+  recorded in `Month_Scope`, with `n_months` beside `n`. A late-month row
+  "predicting" its own month's close is describing it.
+
+</details>
+
+<details>
+<summary><strong>Null models — what an extreme-timing share should be compared against</strong></summary>
+
+## Uniform Is The Wrong Baseline
+
+"Which third of the month held the high?" invites a 33.3% null. That null is already
+wrong before any market behaviour is involved. For a driftless random walk the time of
+the maximum follows the **arcsine law**, `F(t) = (2/π)·arcsin(√t)`, whose density is
+U-shaped: mass piles up at both ends of the period. Randomness alone puts extremes
+early or late.
+
+The no-information baselines are therefore:
+
+| Buckets | First % | Middle % | Last % |
+| --- | ---: | ---: | ---: |
+| Thirds | 39.2 | 21.6 | 39.2 |
+| Quintiles | 29.5 | 14.1 / 12.8 / 14.1 | 29.5 |
+
+`arcsine_null_shares(n_buckets)` returns these, and the third and quintile timing
+tables carry them as an `arcsine_null_pct` column.
+
+## The Null Ladder
+
+Each rung adds one real feature of the data. ES, 192 complete months, against an
+observed **High-Late of 54.2%**:
+
+| `Null` | High-Late % | Gap (pp) | p |
+| --- | ---: | ---: | ---: |
+| uniform — not produced, and wrong | 33.3 | +20.9 | — |
+| `arcsine` — randomness alone | 39.2 | +15.0 | — |
+| `driftless` — simulated zero-drift walk | 38.2 | +16.0 | 0.000 |
+| `drift` — plus the sample's real drift | 44.7 | +9.4 | 0.004 |
+| `drift_vol` — plus each month's own volatility | 47.3 | +6.8 | 0.064 |
+| `shuffle` — the months' own returns, reordered | 52.5 | +1.7 | 0.586 |
+
+That `driftless` lands on the closed-form arcsine value is the check that the
+simulation is honest, not a separate finding.
+
+Low-Early behaves the same way: observed 52.6 against 39.2 arcsine, 40.3 driftless
+(p=0.000), 47.0 with drift (p=0.13), 49.6 once per-month volatility is added
+(p=0.43), and 53.8 with the months' own returns reordered (p=0.71). So does the
+quintile view — High-Q5 observed 42.7 against 29.5 arcsine, 34.0 with drift
+(p=0.010), 36.3 with volatility (p=0.070) and 41.4 reordered (p=0.694).
+
+Reading down the ladder: roughly 6pp of the apparent effect is the arcsine law, 5pp is
+drift, 3pp is volatility differing between months, and the remaining 5pp is the fat
+right tail of the real monthly return distribution — a Gaussian walk cannot produce
+enough large up-months, and a large up-month puts its high on the last session almost
+surely. That leaves 1.7pp, which is nothing. The `drift` rung looks significant at
+p=0.004 only because a Gaussian walk is the wrong shape for monthly returns; the
+`shuffle` rung, which makes no distributional assumption at all, is the one to read.
+
+Two cautions. The single marginal cell (p=0.064) is one of 16 tested, which is what
+Research Hazard 7 warns about. And 192 months does not buy much power: the null bands
+are roughly ±7pp wide, so this rules out a large sequencing effect, not a small one.
+
+The Bullish/Bearish rows of the timing tables are near-tautological for the same
+reason a large up-month lands its high late — a month that closes up nearly has to
+make its high late. That is why `Bull_Bear` is a whole-month label and is barred from
+being a conditioner.
+
+## API
+
+```python
+# monthly high/low position, in thirds of the month's session list
+extreme_position_null(df, trading_month_start_index(df.index),
+                      intraday_trading_day_index(df.index), n_buckets=3)
+
+# the same question one timeframe up: weekly high/low position, by weekday slot
+extreme_position_null(df, trading_week_monday_index(df.index),
+                      intraday_trading_day_index(df.index), n_buckets=5)
+```
+
+It lives in the `RANDOM-WALK NULL` section of `po3_research/research.py` and is
+timeframe-agnostic: it takes a period key per bar and a position key per bar, so months
+(period=month, position=session), weeks (period=week, position=session) and days
+(period=session, position=bar) are all the same call. `PERIOD_KEY_FUNCS` maps
+`"session"`, `"week"` and `"month"` to the matching index helpers. Controls are
+`RW_NULL_CONTROLS = ["arcsine", "driftless", "drift", "drift_vol", "shuffle"]`. The
+monthly extremes module writes `extreme_timing_null_by_third.csv` and
+`extreme_timing_null_by_quintile.csv`.
+
+One measurement caveat: the observed extreme is located from the real High/Low series,
+while a simulated path has no intra-bar range, so its extreme is a bar-close extreme.
+On ES the two agree on the third-bucket for 187/192 months on the high and 185/192 on
+the low.
 
 </details>
 
@@ -292,14 +521,18 @@ Generated outputs are local artifacts and ignored by git, except tracked README 
 ```text
 output/
 ├── examples/                              # tracked README result PNGs + summary CSVs
-├── *.png                                  # standard weekly charts
+├── es/                                    # standard weekly charts + experiments, per symbol
+├── nq/
 └── research_events/
-    ├── intraday_levels/
-    ├── intraday_levels_nq/
+    ├── weekly_events_es/                  # one directory per module per symbol
+    ├── weekly_open_revisit_es/
+    ├── intraday_levels_es/
     ├── path_dependency_es/
-    ├── path_dependency_nq/
     ├── relative_path_es/
-    └── relative_path_nq/
+    ├── monthly_extremes_es/
+    ├── monthly_levels_es/
+    ├── month_context_es/
+    └── ..._nq/
 ```
 
 </details>
@@ -310,17 +543,19 @@ output/
 Run tests:
 
 ```bash
-python3 -m pytest -q tests/test_event_research.py tests/test_readme_examples.py
-python3 -m py_compile analysis.py scripts/build_readme_examples.py
+python3 -m pytest -q tests/
+python3 -m py_compile analysis.py scripts/build_readme_examples.py po3_research/research.py
 ```
 
 | Path | Purpose |
 | --- | --- |
-| `po3_research/research.py` | research implementation |
+| `po3_research/research.py` | research implementation and CLI |
+| `po3_research/__main__.py` | `python3 -m po3_research` entry point |
 | `analysis.py` | backward-compatible runner/import wrapper |
 | `scripts/build_readme_examples.py` | reproducible README result generator |
 | `tests/test_event_research.py` | regression/unit tests for research helpers |
 | `tests/test_readme_examples.py` | README artifact metadata and script-entry tests |
+| `tests/test_cli.py` | CLI arguments, module selection, output scoping |
 | `data/` | local parquet data, ignored by git |
 | `output/examples/` | tracked README result artifacts |
 
