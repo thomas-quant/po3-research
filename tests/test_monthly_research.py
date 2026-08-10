@@ -448,3 +448,70 @@ def test_weeks_spanning_two_session_months_are_flagged():
     assert bool(week_state.loc[straddling, "Straddles_Month_Boundary"])
     assert week_state.loc[straddling, "Month_Start"] == pd.Timestamp("2026-03-01", tz=ET)
     assert not bool(week_state.loc[pd.Timestamp("2026-03-16", tz=ET), "Straddles_Month_Boundary"])
+
+
+def _month_state_rows() -> pd.DataFrame:
+    """
+    Day-level rows for Jan–Apr 2020 with month-state and monthly targets attached.
+
+    2020 sits before `TRAIN_END`, so every row is a Train row and the p25/p75
+    bucketing actually has quantiles to learn from.
+    """
+    months = [_weekday_sessions_in_month(2020, month, 19) for month in (1, 2, 3, 4)]
+    frame = pd.concat([
+        _hourly_frame(m, [100.0 + i for i in range(len(m))]) for m in months]).sort_index()
+    monthly = analysis.build_monthly(frame)
+    state = analysis.build_month_state_by_session(frame, monthly)
+    sessions = pd.DatetimeIndex(pd.unique(analysis.intraday_trading_day_index(frame.index)))
+    rows = pd.DataFrame({
+        "Trading_Day": sessions,
+        "Split": np.where(sessions <= analysis.TRAIN_END, "Train", "OOS"),
+        "Level_Name": "Globex_Open",
+        "Day_Bullish": [bool(i % 2) for i in range(len(sessions))],
+    })
+    return analysis.attach_monthly_targets(
+        analysis.attach_month_state(rows, state), monthly)
+
+
+def test_monthly_targets_are_scored_on_early_month_rows_only_and_carry_n_months():
+    rows = _month_state_rows()
+
+    summary = analysis.month_state_outcomes(
+        rows, ["Day_Bullish"], group_cols=["Split", "Level_Name"])
+
+    monthly_rows = summary[summary["Target"].isin(analysis.MONTHLY_TARGETS)]
+    assert not monthly_rows.empty
+    assert set(monthly_rows["Month_Scope"]) == {"Early"}
+    assert bool((monthly_rows["n_months"] > 0).all())
+    assert bool((monthly_rows["n_months"] <= monthly_rows["n"]).all())
+
+    intraday_rows = summary[summary["Target"].eq("Day_Bullish")]
+    assert set(intraday_rows["Month_Scope"]) == {"All"}
+    assert {"Split", "Level_Name", "Conditioner", "Conditioner_Value", "pct"} <= set(summary.columns)
+
+
+def test_month_state_summary_covers_every_allowed_conditioner_and_no_other():
+    rows = _month_state_rows()
+
+    summary = analysis.month_state_outcomes(rows, ["Day_Bullish"])
+
+    expected = {
+        f"{c}_Bucket" if c in analysis.MONTH_STATE_NUMERIC_CONDITIONERS else c
+        for c in analysis.MONTH_STATE_CONDITIONERS
+    }
+    assert set(summary["Conditioner"]) == expected
+    assert not set(summary["Conditioner"]) & set(analysis.WHOLE_MONTH_LABELS)
+
+
+def test_numeric_month_state_conditioners_bucket_on_train_quantiles():
+    rows = _month_state_rows()
+
+    bucketed = analysis.apply_month_state_buckets(rows)
+
+    assert set(rows["Split"]) == {"Train"}
+    assert set(bucketed["Month_Return_So_Far_Pct_Bucket"].dropna()) == {
+        "P25 Low", "Middle 25-75%", "P75 High"}
+    assert set(bucketed["Session_Pos_In_Month_Bucket"].dropna()) == {
+        "P25 Low", "Middle 25-75%", "P75 High"}
+    # The lagged twin has no value on each month's first session.
+    assert bucketed["Month_Return_To_Prior_Close_Pct_Bucket"].isna().sum() == 4
