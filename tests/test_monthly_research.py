@@ -217,3 +217,21 @@ def test_every_extreme_timing_cut_is_produced_for_high_and_low():
         for event in ["high", "low"]
         for cut in ["third", "quintile", "week_of_month", "weekday", "session", "day_of_month"]
     }
+
+
+def test_monthly_extremes_runner_writes_every_table_and_the_primary_charts(tmp_path):
+    frame = _four_month_frame()
+
+    monthly = analysis.run_monthly_extremes_research(frame, symbol="ES", output_dir=tmp_path)
+
+    assert not monthly.empty
+    written = {p.name for p in tmp_path.iterdir()}
+    assert "monthly_rows.csv" in written
+    for event in ["high", "low"]:
+        for cut in ["third", "quintile", "week_of_month", "weekday", "session", "day_of_month"]:
+            assert f"{event}_timing_by_{cut}.csv" in written
+        for cut in ["third", "quintile", "week_of_month"]:
+            assert f"{event}_timing_by_{cut}.png" in written
+    # Descriptive only: no train/OOS column anywhere in the monthly outputs.
+    assert "Split" not in pd.read_csv(tmp_path / "monthly_rows.csv").columns
+    assert "Split" not in pd.read_csv(tmp_path / "high_timing_by_third.csv").columns
