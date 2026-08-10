@@ -1781,6 +1781,45 @@ def monthly_extreme_timing_tables(df: pd.DataFrame, monthly: pd.DataFrame) -> di
     return tables
 
 
+def run_monthly_extremes_research(df: pd.DataFrame, symbol: str = None,
+                                  output_dir: Path = None) -> pd.DataFrame:
+    """
+    Monthly extreme-timing tables and charts from the resampled frame.
+
+    Descriptive only — no train/OOS split, and no ranking table. Charts cover the
+    primary position cuts plus week-of-month.
+    """
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("monthly_extremes", symbol)
+    print(f"[Research] {symbol} monthly extremes ...")
+    monthly = build_monthly(df)
+    _write_csv(monthly, "monthly_rows", output_dir=out_dir)
+
+    tables = monthly_extreme_timing_tables(df, monthly)
+    for name, table in tables.items():
+        _write_csv(table, name, output_dir=out_dir)
+
+    months = int(len(complete_months(monthly)))
+    for event in ["high", "low"]:
+        for cut in MONTH_PRIMARY_CUTS:
+            suffix, _order = MONTH_TIMING_CUTS[cut]
+            table = tables[f"{event}_timing_by_{cut}"]
+            chart = table[table["Direction_Scope"].eq("All")]
+            _barh_chart(
+                chart,
+                [f"{event.capitalize()}_{suffix}"],
+                "pct",
+                f"{symbol} monthly {event} by {cut.replace('_', ' ')} "
+                f"— descriptive, {months} complete months",
+                f"{event}_timing_by_{cut}",
+                output_dir=out_dir,
+            )
+
+    print(f"\n[Research] Monthly high timing by third ({months} complete months):")
+    print(tables["high_timing_by_third"].to_string(index=False))
+    return monthly
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
