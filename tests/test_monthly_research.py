@@ -317,3 +317,55 @@ def test_monthly_level_touch_distribution_and_first_touch_third_use_complete_mon
         assert column in distribution
         assert column in thirds
     assert list(thirds[thirds["Level_Name"].eq("Monthly_Open")]["First_Touch_Third"]) == analysis.MONTH_THIRDS
+
+
+def _touched_on_session_ten_frame() -> pd.DataFrame:
+    """
+    Jan at 100, a complete 20-session March at 300, May at 500.
+
+    Only session 10 of March dips back to 100, so the prior-month close is touched
+    from session 0 through session 10 and from nowhere after it.
+    """
+    january = _weekday_sessions_in_month(2026, 1, 21)
+    march = _weekday_sessions_in_month(2026, 3, 20)
+    may = _weekday_sessions_in_month(2026, 5, 20)
+    bars = []
+    for session in january:
+        bars += _session_bars(session, 100.0)
+    for position, session in enumerate(march):
+        day = pd.Timestamp(session).normalize()
+        low = 100.0 if position == 10 else 299.0
+        bars += [
+            (day - pd.Timedelta(hours=6), 300.0, 301.0, 299.0, 300.0),
+            (day + pd.Timedelta(hours=9, minutes=31), 300.0, 301.0, low, 300.0),
+            (day + pd.Timedelta(hours=16), 300.0, 301.0, 299.0, 300.0),
+        ]
+    for session in may:
+        bars += _session_bars(session, 500.0)
+    return _minute_frame(bars)
+
+
+def test_forward_touch_decile_curve_for_a_level_touched_only_on_session_ten():
+    by_index, by_decile = analysis.monthly_level_forward_touch(_touched_on_session_ten_frame())
+
+    decile = by_decile[by_decile["Level_Name"].eq("Prior_Month_Close")].set_index("Decile")
+    # 20 sessions, so decile d starts at session int(d * 20 / 10) = 0, 2, 4 ... 18.
+    # D6 starts at session 10 — the last start from which the touch is still ahead.
+    assert list(decile.loc[[f"D{d}" for d in range(1, 7)], "touch_pct"]) == [100.0] * 6
+    assert list(decile.loc[[f"D{d}" for d in range(7, 11)], "touch_pct"]) == [0.0] * 4
+    assert set(decile["n_months"]) == {1}      # every month contributes to every decile
+
+    index = by_index[by_index["Level_Name"].eq("Prior_Month_Close")].set_index("Session_Index")
+    assert index.loc[10, "touch_pct"] == 100.0
+    assert index.loc[11, "touch_pct"] == 0.0
+    for column in ["n_months", "touch_months", "ci_low", "ci_high", "is_sparse"]:
+        assert column in by_index
+        assert column in by_decile
+
+
+def test_forward_touch_skips_partial_months():
+    by_index, _by_decile = analysis.monthly_level_forward_touch(_touched_on_session_ten_frame())
+
+    # January and May are the sample edges; only March contributes.
+    assert set(by_index["n_months"]) == {1}
+    assert by_index["Session_Index"].max() == 19
