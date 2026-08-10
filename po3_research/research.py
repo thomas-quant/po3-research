@@ -29,6 +29,7 @@ OUTPUT_DIR  = Path("output")           # where charts are saved
 EVENT_OUTPUT_DIR = OUTPUT_DIR / "research_events"
 TRAIN_END = pd.Timestamp("2023-12-31", tz="America/New_York")
 SPARSE_N = 20
+SPARSE_MONTHS = 20                     # monthly sample floor; 192 complete months in ES
 BOOTSTRAP_RESAMPLES = 1000
 
 # Session definitions (Eastern Time).
@@ -44,6 +45,10 @@ SESSION_ORDER = list(SESSIONS.keys())
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 COLORS = {"Bullish": "#27ae60", "Bearish": "#e74c3c"}
+
+MONTH_THIRDS = ["Early", "Mid", "Late"]
+MONTH_QUINTILES = ["Q1", "Q2", "Q3", "Q4", "Q5"]
+WEEK_OF_MONTH_ORDER = ["W1", "W2", "W3", "W4", "W5"]
 
 
 def module_output_dir(module: str, symbol: str = None, root: Path = None) -> Path:
@@ -177,6 +182,47 @@ def trading_week_monday_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     """Vectorized `trading_week_monday` for an ET DatetimeIndex."""
     days = intraday_trading_day_index(index)
     return _shift_days_local(days, -days.dayofweek)
+
+
+def trading_month_start(ts: pd.Timestamp) -> pd.Timestamp:
+    """
+    Return the first calendar day (ET midnight) of the session month of `ts`.
+
+    A session month holds every bar whose session date falls in that calendar
+    month, so August 2025 opens at the 18:00 ET Globex print on 31 July and closes
+    at the 17:00 print on 29 August. This mirrors the trading week exactly — the
+    week opens Sunday 18:00 and is labelled by the following Monday — and the label
+    is the calendar anchor, not the first bar, matching `trading_week_monday`.
+
+    Routing through `_shift_days_local` keeps the anchor at local midnight across
+    both DST transitions.
+    """
+    day = intraday_trading_day(ts)
+    return _shift_days_local(day, -(day.day - 1))
+
+
+def trading_month_start_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Vectorized `trading_month_start` for an ET DatetimeIndex."""
+    days = intraday_trading_day_index(index)
+    return _shift_days_local(days, -(np.asarray(days.day) - 1))
+
+
+def week_of_month(ts: pd.Timestamp) -> str:
+    """Calendar week bucket W1–W5 by day of month. W5 spans at most 3 days."""
+    return f"W{(ts.day - 1) // 7 + 1}"
+
+
+def _position_bucket(index: int, n_sessions: int, labels: list) -> str:
+    """
+    Map a 0-based session index to one of `labels` equal-width position buckets.
+
+    Dividing by `n_sessions` rather than `n_sessions - 1` keeps the buckets equal
+    width; the final index is clipped into the last bucket.
+    """
+    if n_sessions <= 0:
+        return labels[0]
+    slot = int(index / n_sessions * len(labels))
+    return labels[min(max(slot, 0), len(labels) - 1)]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
