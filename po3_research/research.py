@@ -2066,6 +2066,36 @@ def monthly_level_forward_touch(df_1m: pd.DataFrame, n_deciles: int = 10,
     )
 
 
+def run_monthly_levels_research(symbol: str = None, path: str = DATA_PATH,
+                                output_dir: Path = None) -> pd.DataFrame:
+    """
+    Monthly level touch research from source 1m data.
+
+    Prior-month levels come from the 1-minute frame itself, not from `build_monthly`
+    on a resampled frame, so the level values match the bars they are tested against.
+    """
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("monthly_levels", symbol)
+    print(f"[Research] {symbol} monthly levels from 1m source ...")
+    df_1m = load_1m_source(path)
+
+    rows = build_monthly_level_rows(df_1m)
+    _write_csv(rows, "monthly_level_rows", output_dir=out_dir)
+
+    distribution = monthly_level_touch_distribution(rows)
+    _write_csv(distribution, "monthly_level_touch_distribution", output_dir=out_dir)
+    _write_csv(monthly_level_first_touch_by_third(rows),
+               "monthly_level_first_touch_by_third", output_dir=out_dir)
+
+    by_index, by_decile = monthly_level_forward_touch(df_1m)
+    _write_csv(by_index, "monthly_level_forward_touch_by_session_index", output_dir=out_dir)
+    _write_csv(by_decile, "monthly_level_forward_touch_by_decile", output_dir=out_dir)
+
+    print("\n[Research] Monthly level touch distribution:")
+    print(distribution.to_string(index=False))
+    return rows
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════

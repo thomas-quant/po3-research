@@ -369,3 +369,23 @@ def test_forward_touch_skips_partial_months():
     # January and May are the sample edges; only March contributes.
     assert set(by_index["n_months"]) == {1}
     assert by_index["Session_Index"].max() == 19
+
+
+def test_monthly_levels_runner_writes_every_output(tmp_path):
+    frame = _touched_on_session_ten_frame()
+    source = tmp_path / "bars.parquet"
+    frame.reset_index(names="datetime_utc").assign(
+        datetime_utc=lambda d: d["datetime_utc"].dt.tz_convert("UTC")).to_parquet(source)
+
+    rows = analysis.run_monthly_levels_research(
+        symbol="ES", path=str(source), output_dir=tmp_path / "out")
+
+    assert not rows.empty
+    written = {p.name for p in (tmp_path / "out").iterdir()}
+    assert written == {
+        "monthly_level_rows.csv",
+        "monthly_level_touch_distribution.csv",
+        "monthly_level_first_touch_by_third.csv",
+        "monthly_level_forward_touch_by_session_index.csv",
+        "monthly_level_forward_touch_by_decile.csv",
+    }
