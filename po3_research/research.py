@@ -2213,6 +2213,146 @@ def build_week_month_state(session_state: pd.DataFrame) -> pd.DataFrame:
     return monday.merge(straddles, on="Week_Start", how="left")
 
 
+def attach_month_state(rows: pd.DataFrame, session_state: pd.DataFrame,
+                       day_col: str = "Trading_Day") -> pd.DataFrame:
+    """Join the session-level month-state conditioners onto a day-level row frame."""
+    keep = ["Trading_Day", "Month_Start", "Session_Index_In_Month", "N_Sessions"]
+    keep += [c for c in MONTH_STATE_CONDITIONERS if c not in keep]
+    state = session_state[keep].rename(columns={"Trading_Day": day_col})
+    out = rows.copy()
+    out[day_col] = pd.to_datetime(out[day_col])
+    return out.merge(state, on=day_col, how="left")
+
+
+def attach_week_month_state(rows: pd.DataFrame, week_state: pd.DataFrame,
+                            week_col: str = "Week_Start") -> pd.DataFrame:
+    """
+    Join month-state onto weekly rows, taken from the week's Monday session.
+
+    `Straddles_Month_Boundary` rides along: about a third of trading weeks span two
+    session months, and for those the Monday's state describes only part of the week.
+    """
+    keep = ["Week_Start", "Month_Start", "Session_Index_In_Month", "N_Sessions",
+            "Straddles_Month_Boundary"]
+    keep += [c for c in MONTH_STATE_CONDITIONERS if c not in keep]
+    state = week_state[keep].rename(columns={"Week_Start": week_col})
+    out = rows.copy()
+    out[week_col] = pd.to_datetime(out[week_col])
+    return out.merge(state, on=week_col, how="left")
+
+
+def attach_monthly_targets(rows: pd.DataFrame, monthly: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attach whole-month labels as TARGETS. They are never conditioners.
+
+    Only complete months contribute, so rows in the sample's truncated edge months
+    carry NaN targets and drop out of the monthly summaries.
+    """
+    labels = complete_months(monthly)
+    if labels.empty:
+        for target in MONTHLY_TARGETS:
+            rows = rows.assign(**{target: np.nan})
+        return rows
+    labels = labels[["Month_Start", "Bull_Bear", "High_Third", "Low_Third"]].copy()
+    labels["Month_Bullish"] = labels["Bull_Bear"].eq("Bullish")
+    labels["Monthly_High_Late"] = labels["High_Third"].eq("Late")
+    labels["Monthly_Low_Early"] = labels["Low_Third"].eq("Early")
+    return rows.merge(labels[["Month_Start"] + MONTHLY_TARGETS], on="Month_Start", how="left")
+
+
+def apply_month_state_buckets(rows: pd.DataFrame, conditioners: list = None) -> pd.DataFrame:
+    """Bucket numeric month-state conditioners on train p25/p75, as every other feature is."""
+    conditioners = conditioners or MONTH_STATE_NUMERIC_CONDITIONERS
+    out = rows.copy()
+    for feature in conditioners:
+        if feature not in out:
+            continue
+        bucket_col = f"{feature}_Bucket"
+        out[bucket_col] = "Middle 25-75%"
+        vals = out[out["Split"].eq("Train")][feature].dropna()
+        if vals.empty:
+            continue
+        q25, q75 = vals.quantile([0.25, 0.75])
+        out.loc[out[feature] <= q25, bucket_col] = "P25 Low"
+        out.loc[out[feature] >= q75, bucket_col] = "P75 High"
+        out.loc[out[feature].isna(), bucket_col] = np.nan
+    return out
+
+
+def month_state_conditioner_columns(rows: pd.DataFrame) -> list:
+    """Allow-listed conditioner names as they appear on a bucketed frame."""
+    names = [
+        f"{c}_Bucket" if c in MONTH_STATE_NUMERIC_CONDITIONERS else c
+        for c in MONTH_STATE_CONDITIONERS
+    ]
+    return [name for name in names if name in rows]
+
+
+def month_state_outcomes(rows: pd.DataFrame, targets: list, group_cols: list = None,
+                         extra_conditioners: list = None,
+                         monthly_targets: list = None) -> pd.DataFrame:
+    """
+    Long-format outcome table by month-state conditioner.
+
+    THE SCOPE RULE FOR MONTHLY TARGETS
+    Row-level targets are scored on every row. Monthly targets are scored on
+    `Third_In_Month == "Early"` rows only and carry `Month_Scope = "Early"`: a
+    late-month row "predicting" its own month's close is describing it. This is the
+    session-position generalization of the weekday scope rule already applied to
+    weekly targets in `_build_twap_vwap_summary` and
+    `intraday_to_weekly_path_dependency`.
+
+    `n_months` sits beside `n` for the same reason `n_weeks` does: one monthly label
+    repeats across up to 24 day-rows, so `n` overstates independent observations.
+    """
+    group_cols = list(group_cols) if group_cols else ["Split"]
+    monthly_targets = list(monthly_targets) if monthly_targets is not None else MONTHLY_TARGETS
+    columns = group_cols + ["Month_Scope", "Conditioner", "Conditioner_Value", "Target",
+                            "n", "n_months", "pct"]
+    detail = apply_month_state_buckets(rows)
+    conditioners = month_state_conditioner_columns(detail)
+    conditioners += [c for c in (extra_conditioners or []) if c in detail]
+    scopes = [
+        ("All", detail, [t for t in targets if t in detail]),
+        ("Early", detail[detail["Third_In_Month"].eq("Early")],
+         [t for t in monthly_targets if t in detail]),
+    ]
+
+    records = []
+    for scope, scope_rows, scope_targets in scopes:
+        if scope_rows.empty or not scope_targets:
+            continue
+        for conditioner in conditioners:
+            for keys, group in scope_rows.groupby(group_cols + [conditioner], dropna=False):
+                keys = keys if isinstance(keys, tuple) else (keys,)
+                base = dict(zip(group_cols, keys[:-1]))
+                for target in scope_targets:
+                    values = group[target].dropna()
+                    # A cell with no observation of this target is not a 0% result,
+                    # it is silence. Partial edge months carry NaN monthly targets and
+                    # would otherwise emit n=0 rows across every conditioner.
+                    if values.empty:
+                        continue
+                    records.append({
+                        **base,
+                        "Month_Scope": scope,
+                        "Conditioner": conditioner,
+                        "Conditioner_Value": keys[-1],
+                        "Target": target,
+                        "n": int(len(values)),
+                        "n_months": int(group.loc[values.index, "Month_Start"].nunique()),
+                        "pct": _pct(values),
+                    })
+    if not records:
+        return pd.DataFrame(columns=columns)
+    out = pd.DataFrame.from_records(records)
+    # Conditioner values mix ints, bools and strings across conditioners; sorting the
+    # mixed column raises unless it is cast first.
+    out["Conditioner_Value"] = out["Conditioner_Value"].astype(str)
+    sort_cols = group_cols + ["Month_Scope", "Conditioner", "Conditioner_Value", "Target"]
+    return out.sort_values(sort_cols).reset_index(drop=True)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
