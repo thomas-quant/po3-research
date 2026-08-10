@@ -539,3 +539,34 @@ def test_month_context_runner_writes_two_summaries_with_both_row_sources(tmp_pat
     assert set(intraday["Row_Source"]) == {"intraday_levels", "relative_path"}
     assert "Straddles_Month_Boundary" in set(weekly["Conditioner"])
     assert set(weekly[weekly["Target"].isin(analysis.MONTHLY_TARGETS)]["Month_Scope"]) == {"Early"}
+
+
+def test_position_timing_tables_carry_the_arcsine_baseline_and_calendar_cuts_do_not():
+    frame = _four_month_frame()
+    monthly = analysis.build_monthly(frame)
+
+    tables = analysis.monthly_extreme_timing_tables(frame, monthly)
+
+    thirds = tables["high_timing_by_third"]
+    assert "arcsine_null_pct" in thirds
+    assert list(thirds[thirds["Direction_Scope"].eq("All")]["arcsine_null_pct"]) == pytest.approx(
+        analysis.arcsine_null_shares(3), abs=1e-3)
+    assert list(tables["low_timing_by_quintile"]["arcsine_null_pct"].head(5)) == pytest.approx(
+        analysis.arcsine_null_shares(5), abs=1e-3)
+    # Weekday, session and week-of-month are calendar buckets, not position buckets.
+    # The arcsine law says nothing about them, so the column must not appear there.
+    for cut in ["weekday", "session", "week_of_month", "day_of_month"]:
+        assert "arcsine_null_pct" not in tables[f"high_timing_by_{cut}"], cut
+
+
+def test_monthly_extremes_runner_writes_the_random_walk_null_tables(tmp_path):
+    frame = _four_month_frame()
+
+    analysis.run_monthly_extremes_research(frame, symbol="ES", output_dir=tmp_path, n_sim=40)
+
+    written = {p.name for p in tmp_path.iterdir()}
+    assert "extreme_timing_null_by_third.csv" in written
+    assert "extreme_timing_null_by_quintile.csv" in written
+    table = pd.read_csv(tmp_path / "extreme_timing_null_by_third.csv")
+    assert set(table["Null"]) == set(analysis.RW_NULL_CONTROLS)
+    assert set(table["Bucket"]) == set(analysis.MONTH_THIRDS)
