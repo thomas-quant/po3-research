@@ -139,7 +139,7 @@ python3 -m po3_research --symbol NQ --data data/nq_1m.parquet \
 
 Modules: `weekly_charts`, `weekly_events`, `weekly_open_revisit`, `intraday_levels`,
 `path_dependency`, `relative_path`, `monthly_extremes`, `monthly_levels`,
-`month_context`. Output is written per symbol, so ES and NQ runs do not overwrite
+`month_context`, `week_context`. Output is written per symbol, so ES and NQ runs do not overwrite
 each other. `python3 analysis.py` still works and accepts the same flags.
 
 <details>
@@ -404,6 +404,16 @@ Forward-touch probability — level touched from session `k` through month end �
 reported on two axes: raw session index, where `n` falls away past ~19 sessions, and
 normalized decile, where every month contributes to every bucket.
 
+Touch rates carry their own null ladder in `monthly_level_touch_null.csv`. "The prior
+month's high is touched in 69% of months, its low in 31%" is mostly a statement about
+DRIFT: on an upward-drifting series the level above spot is reached far more often
+than the one below, with no level-specific behaviour involved. `arcsine` is absent
+from this ladder — it prices the time of the maximum, not whether a fixed price is
+reached — so the rungs are `driftless`, `drift`, `drift_vol` and `shuffle`. Simulated
+paths step hourly (`MONTHLY_LEVEL_NULL_STRIDE`); whether a walk reaches a level is a
+property of the continuous path's running extreme, which minute steps approximate no
+better than hourly ones.
+
 ## 10. Month-State Context
 
 Month-state attaches to the existing intraday and weekly rows as a conditioner:
@@ -421,6 +431,41 @@ Two rules govern it:
 - **Scope.** Monthly targets are scored on `Third_In_Month == Early` rows only,
   recorded in `Month_Scope`, with `n_months` beside `n`. A late-month row
   "predicting" its own month's close is describing it.
+
+## 11. Week-State Intraday Window Context
+
+Whether higher-timeframe path state conditions a lower-timeframe path — not the day's
+closing direction, which module 10 answers in the negative, but the four windows
+inside the day (`RELATIVE_WINDOWS`), and their magnitude as well as their sign.
+
+Two conditioner families, both strictly lagged relative to the window being scored:
+
+- **Week state** — the week's path up to the end of the *previous* session, so a
+  Wednesday window is never conditioned on Wednesday's own move. NaN on Mondays,
+  which have no prior session inside their week.
+- **Day-prior state** — the current session's path from its open to the *window
+  open*. Legitimate for a 13:00 window because 09:30–13:00 has already happened;
+  NaN for the Globex window, which opens the session.
+
+There is deliberately no contemporaneous variant of either, which is the fix for the
+defect module 10 shipped.
+
+**The volatility-clustering baseline.** Any magnitude target conditioned on any
+volatility-flavoured state will "work", because volatility clusters — that is GARCH,
+not path structure, and a raw range table cannot tell the two apart. So magnitude is
+reported twice: `Window_Range_Pct` raw, and `Window_Range_Ratio` over the *prior
+session's same window*. A conditioner that only rediscovers vol clustering moves the
+raw column and leaves the ratio flat. The ratio is the finding.
+
+`window_conditioner_spreads.csv` is the table to read first. It carries a
+`ratio_denominator_overlap` flag: a conditioner whose own observation period contains
+the prior session sits on both sides of the division (a wide week-so-far implies a
+wide yesterday implies a big denominator implies a small ratio, with no forward-looking
+content). Those rows are flagged rather than dropped — the raw-range column is still
+theirs to read, and hiding the row would hide the confound.
+
+Continuous targets carry a cluster-bootstrapped mean and CI via `bootstrap_mean_ci`,
+clustered on `Week_Start`: twenty windows a week are not twenty independent draws.
 
 </details>
 

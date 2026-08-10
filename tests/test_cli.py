@@ -19,6 +19,7 @@ def test_module_list_matches_the_documented_research_modules():
         "monthly_extremes",
         "monthly_levels",
         "month_context",
+        "week_context",
     ]
 
 

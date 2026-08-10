@@ -161,6 +161,19 @@ These have all been fixed once. Do not reintroduce them.
    `Month_Scope`, and carry `n_months` beside `n` — one monthly label repeats across
    up to 24 day-rows. This is the session-position generalization of the weekday
    scope rule in item 2.
+11. **Level touch rates without a drift null.** "The prior month's high is touched in
+   69% of months, its low in 31%" is mostly a statement about drift: the level above
+   spot is reached far more often than the one below on an upward-drifting series.
+   Score touch rates with `monthly_level_touch_null`. `arcsine` has no place on that
+   ladder — it prices the time of the maximum, not whether a fixed price is reached.
+12. **Magnitude conditioned on volatility state.** Any range target conditioned on any
+   volatility-flavoured conditioner will "work", because volatility clusters. That is
+   GARCH, not path structure. Report magnitude as `Window_Range_Ratio` — the range over
+   the PRIOR SESSION's same window — beside the raw range; a conditioner that only
+   rediscovers clustering moves the raw column and leaves the ratio flat. Watch the
+   denominator: a conditioner whose observation period contains the prior session sits
+   on both sides of the division and its ratio is mechanical, which is what
+   `RATIO_DENOMINATOR_OVERLAP` and the `ratio_denominator_overlap` flag record.
 
 ## Key Levels
 

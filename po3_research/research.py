@@ -2846,6 +2846,435 @@ def run_month_context_research(symbol: str = None, path: str = DATA_PATH,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# WEEK-STATE → INTRADAY WINDOW CONTEXT
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Does higher-timeframe path state condition the path of a LOWER timeframe — not the
+# day's closing direction, which `month_context` already answers in the negative, but
+# the individual windows inside the day, and their MAGNITUDE as well as their sign.
+#
+# Two conditioner families, both strictly lagged relative to the window being scored:
+#
+#   week state   the week's path up to the END OF THE PREVIOUS SESSION. Never the
+#                current session, so a Wednesday window is never conditioned on
+#                Wednesday's own move.
+#   day state    the current session's path from its open up to the WINDOW OPEN. This
+#                is the "day's own prior path" rung: legitimate for a 13:00 window
+#                because 09:30–13:00 has already happened, and unusable for the
+#                Globex window, which has no prior path inside its session.
+#
+# There is deliberately NO contemporaneous variant of either. `month_context` shipped
+# `Month_Return_So_Far_Pct` and `Above_Monthly_Open` measured to the current session's
+# close, and they produce a ~28pp spread against a same-session target that is simply
+# the session's own return read back. Nothing here is measured past the window open.
+#
+# THE VOLATILITY-CLUSTERING BASELINE
+#
+# Any magnitude target conditioned on any volatility-flavoured state will "work",
+# because volatility clusters. That is GARCH, not path structure, and a raw range
+# table cannot tell the two apart. So every magnitude target is reported twice:
+#
+#   Window_Range_Pct     raw, in percent of the window open
+#   Window_Range_Ratio   the same range over the PRIOR DAY's same-window range
+#
+# A conditioner that only rediscovers vol clustering moves the raw column and leaves
+# the ratio flat. Only a conditioner that moves the ratio carries information the
+# previous day's range did not already have. The ratio is the finding; the raw column
+# is there so the ratio's denominator is auditable.
+
+WEEK_STATE_CONDITIONERS = [
+    "Session_Index_In_Week",
+    "Week_Return_To_Prior_Close_Pct",
+    "Week_Range_So_Far_Pct",
+    "Above_Weekly_Open_At_Prior_Close",
+    "Prior_Week_Bull_Bear",
+]
+DAY_PRIOR_CONDITIONERS = [
+    "Day_Return_To_Window_Open_Pct",
+    "Day_Range_To_Window_Open_Pct",
+    "Prior_Window_Return_Pct",
+    "Prior_Window_Range_Pct",
+]
+WEEK_CONTEXT_NUMERIC_CONDITIONERS = [
+    "Week_Return_To_Prior_Close_Pct",
+    "Week_Range_So_Far_Pct",
+    "Day_Return_To_Window_Open_Pct",
+    "Day_Range_To_Window_Open_Pct",
+    "Prior_Window_Return_Pct",
+    "Prior_Window_Range_Pct",
+]
+# `Window_Range_Ratio` divides by the PRIOR SESSION's same-window range, so any
+# conditioner whose own observation period contains that session sits on both sides of
+# the division. A wide week-so-far implies a wide yesterday implies a big denominator
+# implies a small ratio — with no forward-looking content whatsoever. Those
+# conditioners get their ratio spread flagged rather than dropped: the raw-range column
+# is still theirs to read, and hiding the row would hide the confound too.
+RATIO_DENOMINATOR_OVERLAP = [
+    "Week_Return_To_Prior_Close_Pct",
+    "Week_Range_So_Far_Pct",
+    # Overlaps on Mondays only, when the prior session falls in the prior week.
+    "Prior_Week_Bull_Bear",
+]
+# Magnitude first, then sign. `Window_Range_Ratio` is the one that has to move.
+WINDOW_MAGNITUDE_TARGETS = ["Window_Range_Pct", "Window_Range_Ratio",
+                            "Window_High_Excursion_Pct", "Window_Low_Excursion_Pct"]
+WINDOW_SIGNED_TARGETS = ["Window_Return_Pct", "Next_Window_Return_Pct"]
+WINDOW_BINARY_TARGETS = ["Window_Bullish"]
+# Every column describing the window being scored, or anything after it. Targets,
+# never conditioners — the mirror of WHOLE_MONTH_LABELS, guarded by the same style
+# of test.
+WINDOW_OUTCOME_LABELS = (WINDOW_MAGNITUDE_TARGETS + WINDOW_SIGNED_TARGETS
+                         + WINDOW_BINARY_TARGETS + ["Window_Close", "Window_High", "Window_Low"])
+
+
+def is_window_outcome_label(column: str) -> bool:
+    """True when `column` describes the window being scored rather than its past."""
+    return column in WINDOW_OUTCOME_LABELS
+
+
+def bootstrap_mean_ci(values, n_resamples: int = BOOTSTRAP_RESAMPLES, seed: int = 42,
+                      clusters=None) -> dict:
+    """
+    Observed mean and bootstrap 95% CI for a continuous column.
+
+    The probability twin above cannot be reused: these targets are ranges and returns,
+    not indicators. `clusters` (normally Week_Start) resamples whole weeks, for the
+    same reason it does there — four windows a day across five days is twenty
+    correlated rows per week, and resampling rows would report a CI several times
+    narrower than the real uncertainty.
+    """
+    series = pd.Series(values).astype(float)
+    arr = series.dropna().to_numpy()
+    n = len(arr)
+    if n == 0:
+        return {"n": 0, "n_clusters": 0, "mean": np.nan, "ci_low": np.nan, "ci_high": np.nan}
+    mean = float(arr.mean())
+    rng = np.random.default_rng(seed)
+
+    if clusters is None:
+        n_clusters = n
+        samples = rng.choice(arr, size=(n_resamples, n), replace=True).mean(axis=1)
+    else:
+        codes = pd.Series(clusters)[series.notna().to_numpy()].astype("category").cat.codes.to_numpy()
+        n_clusters = int(codes.max()) + 1 if len(codes) else 0
+        if n_clusters == 0:
+            return {"n": n, "n_clusters": 0, "mean": round(mean, 6), "ci_low": np.nan, "ci_high": np.nan}
+        sums = np.bincount(codes, weights=arr, minlength=n_clusters)
+        counts = np.bincount(codes, minlength=n_clusters).astype(float)
+        picks = rng.integers(0, n_clusters, size=(n_resamples, n_clusters))
+        samples = sums[picks].sum(axis=1) / counts[picks].sum(axis=1)
+
+    lo, hi = np.percentile(samples, [2.5, 97.5])
+    return {
+        "n": n,
+        "n_clusters": n_clusters,
+        "mean": round(mean, 6),
+        "ci_low": round(float(lo), 6),
+        "ci_high": round(float(hi), 6),
+    }
+
+
+def build_week_state_by_session(df_1m: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per session carrying week state as of the END OF THE PREVIOUS SESSION.
+
+    Everything here is lagged by construction. `Week_Range_So_Far_Pct` spans the
+    week open to the prior session's close and is NaN on a Monday, because a Monday
+    has no prior session inside its week — that NaN is the honest value and is
+    reported rather than filled.
+    """
+    session_keys = intraday_trading_day_index(df_1m.index)
+    grouped = df_1m.groupby(session_keys)
+    closes = grouped["Close"].last()
+    highs = grouped["High"].max()
+    lows = grouped["Low"].min()
+    opens = grouped["Open"].first()
+
+    frame = pd.DataFrame({
+        "Trading_Day": pd.DatetimeIndex(closes.index),
+        "Session_Close": closes.to_numpy(),
+        "Session_High": highs.to_numpy(),
+        "Session_Low": lows.to_numpy(),
+        "Session_Open": opens.to_numpy(),
+    }).sort_values("Trading_Day").reset_index(drop=True)
+    frame["Week_Start"] = trading_week_monday_index(pd.DatetimeIndex(frame["Trading_Day"]))
+    frame["Session_Index_In_Week"] = frame.groupby("Week_Start").cumcount()
+
+    week_open = frame.groupby("Week_Start")["Session_Open"].transform("first")
+    # Cumulative extremes INCLUDING this session, then shifted, so every figure stops
+    # at the previous session's close.
+    run_high = frame.groupby("Week_Start")["Session_High"].cummax()
+    run_low = frame.groupby("Week_Start")["Session_Low"].cummin()
+    prior_close = frame.groupby("Week_Start")["Session_Close"].shift(1)
+    frame["_Prior_High"] = run_high.groupby(frame["Week_Start"]).shift(1)
+    frame["_Prior_Low"] = run_low.groupby(frame["Week_Start"]).shift(1)
+
+    frame["Week_Return_To_Prior_Close_Pct"] = (prior_close / week_open - 1) * 100
+    frame["Week_Range_So_Far_Pct"] = (frame["_Prior_High"] - frame["_Prior_Low"]) / week_open * 100
+    frame["Above_Weekly_Open_At_Prior_Close"] = np.where(
+        prior_close.isna(), np.nan, prior_close > week_open)
+
+    week_close = frame.groupby("Week_Start")["Session_Close"].last()
+    week_first_open = frame.groupby("Week_Start")["Session_Open"].first()
+    week_dir = np.where(week_close > week_first_open, "Bullish", "Bearish")
+    prior_week_dir = pd.Series(week_dir, index=week_close.index).shift(1)
+    frame["Prior_Week_Bull_Bear"] = frame["Week_Start"].map(prior_week_dir)
+    return frame.drop(columns=["_Prior_High", "_Prior_Low"])
+
+
+def build_intraday_window_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per session × intraday window, with the window's outcome and the path
+    that preceded it inside the same session.
+
+    Windows are `RELATIVE_WINDOWS`, which tile the session 18:00 → 17:00. Day-prior
+    state spans the session open to the window open, so it is empty for the first
+    window of the session and is reported as NaN there.
+    """
+    records = []
+    session_keys = intraday_trading_day_index(df_1m.index)
+    for trading_day, day in df_1m.groupby(session_keys, sort=True):
+        if len(day) < 2:
+            continue
+        day = day.sort_index()
+        idx = day.index
+        opens = day["Open"].to_numpy()
+        highs = day["High"].to_numpy()
+        lows = day["Low"].to_numpy()
+        closes = day["Close"].to_numpy()
+        day_open = float(opens[0])
+
+        for window_name, (start_hm, end_hm) in RELATIVE_WINDOWS.items():
+            start_ts = _window_timestamp(trading_day, start_hm)
+            end_ts = _window_timestamp(trading_day, end_hm)
+            if end_ts <= start_ts:
+                end_ts += pd.Timedelta(days=1)
+            start_pos = int(idx.searchsorted(start_ts, side="left"))
+            end_pos = int(idx.searchsorted(end_ts, side="left"))
+            if end_pos <= start_pos:
+                continue
+            w_open = float(opens[start_pos])
+            if not w_open:
+                continue
+            w_close = float(closes[end_pos - 1])
+            w_high = float(highs[start_pos:end_pos].max())
+            w_low = float(lows[start_pos:end_pos].min())
+
+            # Day-prior path: session open through the bar before the window opens.
+            if start_pos > 0:
+                prior_close = float(closes[start_pos - 1])
+                prior_high = float(highs[:start_pos].max())
+                prior_low = float(lows[:start_pos].min())
+                day_return_to_open = (prior_close / day_open - 1) * 100 if day_open else np.nan
+                day_range_to_open = (prior_high - prior_low) / day_open * 100 if day_open else np.nan
+            else:
+                day_return_to_open = np.nan
+                day_range_to_open = np.nan
+
+            records.append({
+                "Trading_Day": trading_day,
+                "Split": "Train" if trading_day <= TRAIN_END else "OOS",
+                "Weekday": trading_weekday(trading_day),
+                "Window_Name": window_name,
+                "Window_Open": w_open,
+                "Window_Close": w_close,
+                "Window_High": w_high,
+                "Window_Low": w_low,
+                "Bars_Total": int(end_pos - start_pos),
+                "Window_Return_Pct": (w_close / w_open - 1) * 100,
+                "Window_Bullish": bool(w_close > w_open),
+                "Window_Range_Pct": (w_high - w_low) / w_open * 100,
+                "Window_High_Excursion_Pct": (w_high - w_open) / w_open * 100,
+                "Window_Low_Excursion_Pct": (w_open - w_low) / w_open * 100,
+                "Day_Return_To_Window_Open_Pct": day_return_to_open,
+                "Day_Range_To_Window_Open_Pct": day_range_to_open,
+            })
+
+    rows = pd.DataFrame.from_records(records)
+    if rows.empty:
+        return rows
+
+    window_order = {name: i for i, name in enumerate(RELATIVE_WINDOWS)}
+    rows["Window_Order"] = rows["Window_Name"].map(window_order)
+    rows = rows.sort_values(["Trading_Day", "Window_Order"]).reset_index(drop=True)
+
+    # The window immediately before this one INSIDE the same session. Shifting within
+    # the session, not across it, keeps the overnight gap out of the conditioner.
+    by_day = rows.groupby("Trading_Day")
+    rows["Prior_Window_Return_Pct"] = by_day["Window_Return_Pct"].shift(1)
+    rows["Prior_Window_Range_Pct"] = by_day["Window_Range_Pct"].shift(1)
+    # The signed follow-through target: the NEXT window's return, so the row's own
+    # window is the conditioner's observation period and the target is strictly after.
+    rows["Next_Window_Return_Pct"] = by_day["Window_Return_Pct"].shift(-1)
+
+    # The volatility-clustering denominator: the SAME window one session earlier.
+    prior_day = rows.sort_values(["Window_Name", "Trading_Day"]).groupby("Window_Name")
+    rows["Prior_Day_Same_Window_Range_Pct"] = prior_day["Window_Range_Pct"].shift(1)
+    rows = rows.sort_values(["Trading_Day", "Window_Order"]).reset_index(drop=True)
+    denominator = rows["Prior_Day_Same_Window_Range_Pct"].replace(0.0, np.nan)
+    rows["Window_Range_Ratio"] = rows["Window_Range_Pct"] / denominator
+
+    rows["Week_Start"] = trading_week_monday_index(pd.DatetimeIndex(rows["Trading_Day"]))
+    return rows
+
+
+def attach_week_state_to_windows(rows: pd.DataFrame, session_state: pd.DataFrame) -> pd.DataFrame:
+    """Join the lagged week-state conditioners onto the session × window rows."""
+    keep = ["Trading_Day"] + [c for c in WEEK_STATE_CONDITIONERS]
+    state = session_state[keep]
+    out = rows.copy()
+    out["Trading_Day"] = pd.to_datetime(out["Trading_Day"])
+    return out.merge(state, on="Trading_Day", how="left")
+
+
+def apply_week_context_buckets(rows: pd.DataFrame, features: list = None) -> pd.DataFrame:
+    """
+    Train-quantile p25/p75 buckets per window × conditioner.
+
+    Cut per window, not pooled: an overnight window's return distribution is much
+    tighter than an RTH one, and a pooled cut would sort windows rather than states.
+    """
+    features = features or WEEK_CONTEXT_NUMERIC_CONDITIONERS
+    out = rows.copy()
+    for feature in features:
+        if feature not in out:
+            continue
+        bucket_col = f"{feature}_Bucket"
+        out[bucket_col] = "Middle 25-75%"
+        out.loc[out[feature].isna(), bucket_col] = np.nan
+        for window_name, group in out.groupby("Window_Name", dropna=False):
+            vals = group[group["Split"].eq("Train")][feature].dropna()
+            if vals.empty:
+                continue
+            q25, q75 = vals.quantile([0.25, 0.75])
+            mask = out["Window_Name"].eq(window_name) & out[feature].notna()
+            out.loc[mask & (out[feature] <= q25), bucket_col] = "P25 Low"
+            out.loc[mask & (out[feature] >= q75), bucket_col] = "P75 High"
+    return out
+
+
+def window_outcomes_by_state(rows: pd.DataFrame, sparse_n: int = SPARSE_N) -> pd.DataFrame:
+    """
+    Window outcomes per Split × Window × conditioner bucket.
+
+    Continuous targets carry a cluster-bootstrapped mean and CI; `Window_Bullish`
+    carries the probability twin. Both cluster on `Week_Start`.
+    """
+    conditioners = []
+    for name in WEEK_STATE_CONDITIONERS + DAY_PRIOR_CONDITIONERS:
+        column = f"{name}_Bucket" if name in WEEK_CONTEXT_NUMERIC_CONDITIONERS else name
+        if column in rows:
+            conditioners.append((name, column))
+
+    records = []
+    for (split, window_name), block in rows.groupby(["Split", "Window_Name"], dropna=False):
+        for name, column in conditioners:
+            for value, group in block.groupby(column, dropna=True):
+                clusters = group["Week_Start"]
+                record = {
+                    "Split": split,
+                    "Window_Name": window_name,
+                    "Conditioner": name,
+                    "Conditioner_Value": value,
+                    "n": int(len(group)),
+                    "n_weeks": int(group["Week_Start"].nunique()),
+                    "is_sparse": bool(len(group) < sparse_n),
+                }
+                for target in WINDOW_MAGNITUDE_TARGETS + WINDOW_SIGNED_TARGETS:
+                    stats = bootstrap_mean_ci(group[target], clusters=clusters)
+                    record[f"{target}_mean"] = stats["mean"]
+                    record[f"{target}_ci_low"] = stats["ci_low"]
+                    record[f"{target}_ci_high"] = stats["ci_high"]
+                for target in WINDOW_BINARY_TARGETS:
+                    stats = bootstrap_probability_ci(group[target], clusters=clusters)
+                    record[f"{target}_pct"] = stats["probability"]
+                    record[f"{target}_ci_low"] = stats["ci_low"]
+                    record[f"{target}_ci_high"] = stats["ci_high"]
+                records.append(record)
+    return pd.DataFrame.from_records(records)
+
+
+def window_conditioner_spreads(summary: pd.DataFrame) -> pd.DataFrame:
+    """
+    P75-High minus P25-Low per Split × Window × conditioner × target.
+
+    This is the table to read first. A conditioner that only rediscovers volatility
+    clustering shows a wide `Window_Range_Pct` spread and a `Window_Range_Ratio`
+    spread near zero; only the ratio row is evidence of higher-timeframe information.
+    Two-bucket conditioners are skipped — the spread is defined on the quantile cut.
+
+    `ratio_denominator_overlap` marks the rows where the ratio is not interpretable
+    because the conditioner contains the prior session the ratio divides by; see
+    RATIO_DENOMINATOR_OVERLAP. Read the raw-range spread for those, never the ratio.
+    """
+    targets = [f"{t}_mean" for t in WINDOW_MAGNITUDE_TARGETS + WINDOW_SIGNED_TARGETS]
+    records = []
+    for keys, group in summary.groupby(["Split", "Window_Name", "Conditioner"], dropna=False):
+        split, window_name, conditioner = keys
+        indexed = group.set_index("Conditioner_Value")
+        if not {"P25 Low", "P75 High"} <= set(indexed.index):
+            continue
+        for target in targets:
+            low, high = indexed.loc["P25 Low", target], indexed.loc["P75 High", target]
+            if pd.isna(low) or pd.isna(high):
+                continue
+            # Non-overlapping CIs at the two ends, as a coarse significance read.
+            lo_hi = indexed.loc["P25 Low", target.replace("_mean", "_ci_high")]
+            hi_lo = indexed.loc["P75 High", target.replace("_mean", "_ci_low")]
+            records.append({
+                "Split": split,
+                "Window_Name": window_name,
+                "Conditioner": conditioner,
+                "Target": target.replace("_mean", ""),
+                "n_low": int(indexed.loc["P25 Low", "n"]),
+                "n_high": int(indexed.loc["P75 High", "n"]),
+                "low_mean": round(float(low), 6),
+                "high_mean": round(float(high), 6),
+                "spread": round(float(high) - float(low), 6),
+                "ci_disjoint": bool(hi_lo > lo_hi or indexed.loc["P75 High", target.replace("_mean", "_ci_high")] < indexed.loc["P25 Low", target.replace("_mean", "_ci_low")]),
+                "ratio_denominator_overlap": bool(
+                    target.startswith("Window_Range_Ratio")
+                    and conditioner in RATIO_DENOMINATOR_OVERLAP),
+            })
+    out = pd.DataFrame.from_records(records)
+    if out.empty:
+        return out
+    return out.sort_values(["Split", "Target", "spread"], ascending=[True, True, False]).reset_index(drop=True)
+
+
+def run_week_context_research(symbol: str = None, path: str = DATA_PATH,
+                              output_dir: Path = None) -> tuple:
+    """Week-state and day-prior-state conditioning of intraday window paths."""
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("week_context", symbol)
+    print(f"[Research] {symbol} week-state intraday window context ...")
+    df_1m = load_1m_source(path)
+
+    session_state = build_week_state_by_session(df_1m)
+    rows = build_intraday_window_rows(df_1m)
+    rows = attach_week_state_to_windows(rows, session_state)
+    rows = apply_week_context_buckets(rows)
+    _write_csv(rows, "intraday_window_rows", output_dir=out_dir)
+
+    summary = window_outcomes_by_state(rows)
+    _write_csv(summary, "window_outcomes_by_state", output_dir=out_dir)
+
+    spreads = window_conditioner_spreads(summary)
+    _write_csv(spreads, "window_conditioner_spreads", output_dir=out_dir)
+
+    if not spreads.empty:
+        train = spreads[spreads["Split"].eq("Train")]
+        print("\n[Research] Magnitude: raw range spread vs range-ratio spread (Train)")
+        print("  ratio spread is only interpretable where overlap=False")
+        pivot = train[train["Target"].isin(["Window_Range_Pct", "Window_Range_Ratio"])].copy()
+        pivot["Target"] = np.where(pivot["ratio_denominator_overlap"],
+                                   pivot["Target"] + " (overlap)", pivot["Target"])
+        print(pivot.pivot_table(index=["Window_Name", "Conditioner"], columns="Target",
+                                values="spread").round(4).to_string())
+    return rows, summary, spreads
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3160,6 +3589,7 @@ def run_experiment(
 MODULES = [
     "weekly_charts", "weekly_events", "weekly_open_revisit", "intraday_levels",
     "path_dependency", "relative_path", "monthly_extremes", "monthly_levels", "month_context",
+    "week_context",
 ]
 
 
@@ -3253,6 +3683,9 @@ def run_research(
         results["month_context"] = run_month_context_research(
             symbol, data_path, output_dir=module_output_dir("month_context", symbol, events_root),
             resample_to=resample_to)
+    if "week_context" in modules:
+        results["week_context"] = run_week_context_research(
+            symbol, data_path, output_dir=module_output_dir("week_context", symbol, events_root))
 
     print(f"\nDone. Output written under  {root}/")
     return results
