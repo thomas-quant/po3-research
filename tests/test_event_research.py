@@ -814,3 +814,31 @@ def test_conditional_event_distribution_clusters_on_week_and_flags_sparse_by_wee
     assert row["n_clusters"] == 3
     # 3 independent weeks is sparse even though 60 bar-rows is not.
     assert bool(row["is_sparse"]) is True
+
+
+# ── DST-safe session dates ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("evening,expected_session_date", [
+    ("2024-11-03 18:00", "2024-11-04"),   # clocks went back that morning
+    ("2024-11-03 23:59", "2024-11-04"),
+    ("2024-03-10 18:00", "2024-03-11"),   # clocks went forward that morning
+    ("2024-01-07 18:00", "2024-01-08"),   # ordinary Sunday
+])
+def test_session_date_lands_on_local_midnight_across_dst(evening, expected_session_date):
+    ts = pd.Timestamp(evening, tz="America/New_York")
+
+    scalar = analysis.intraday_trading_day(ts)
+    vector = analysis.intraday_trading_day_index(pd.DatetimeIndex([ts]))[0]
+
+    for value in (scalar, vector):
+        assert str(value.date()) == expected_session_date
+        assert (value.hour, value.minute) == (0, 0)
+
+
+def test_dst_evening_and_next_morning_share_one_trading_day():
+    idx = pd.to_datetime(["2024-11-03 18:00", "2024-11-03 20:00", "2024-11-04 00:00", "2024-11-04 09:30"]).tz_localize("America/New_York")
+
+    days = analysis.intraday_trading_day_index(idx)
+
+    assert days.nunique() == 1
+    assert analysis.trading_week_monday_index(idx).nunique() == 1
