@@ -1988,6 +1988,84 @@ def monthly_level_first_touch_by_third(rows: pd.DataFrame,
     return pd.DataFrame.from_records(records)
 
 
+def monthly_level_forward_touch(df_1m: pd.DataFrame, n_deciles: int = 10,
+                                sparse_months: int = SPARSE_MONTHS) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    P(level touched from the start of session k through month end), on two axes.
+
+    Raw session index is directly interpretable, but n falls away past ~19 sessions
+    because short months stop contributing — the count column records that. The
+    normalized decile axis gives every month a contribution to every bucket, so the
+    curve is comparable across month lengths.
+
+    Reuses the reverse `np.maximum.accumulate` trick from
+    `intraday_level_forward_touch_distribution`, applied per month. Partial months
+    are excluded, and counting starts at the same 09:30 guard the row builder uses.
+    """
+    by_index, by_decile = {}, {}
+    month_keys = trading_month_start_index(df_1m.index)
+    first_month, last_month = month_keys.min(), month_keys.max()
+    prev = None
+    for month_start, m in df_1m.groupby(month_keys, sort=True):
+        m = m.sort_index()
+        current = {
+            "Monthly_High": float(m["High"].max()),
+            "Monthly_Low": float(m["Low"].min()),
+            "Monthly_Close": float(m["Close"].iloc[-1]),
+        }
+        idx, ordered, session_index, start_pos = _month_level_context(m)
+        partial = month_start == first_month or month_start == last_month
+        if len(m) >= 2 and start_pos < len(idx) and not partial:
+            n_sessions = len(ordered)
+            lows = m["Low"].to_numpy()
+            highs = m["High"].to_numpy()
+            # Sessions are contiguous in a sorted index, so the first eligible bar of
+            # each session is the first position where the session index changes.
+            tail = session_index[start_pos:]
+            changes = np.flatnonzero(np.r_[True, tail[1:] != tail[:-1]]) + start_pos
+            first_eligible = {int(session_index[p]): int(p) for p in changes}
+            values = _monthly_level_values(m, prev)
+            for level_name in MONTHLY_LEVELS:
+                value = values[level_name]
+                if pd.isna(value):
+                    continue
+                touch = (lows <= value) & (highs >= value)
+                touch[:start_pos] = False
+                future = np.maximum.accumulate(touch[::-1])[::-1]
+                for session_k, pos in first_eligible.items():
+                    by_index.setdefault((level_name, session_k), []).append(bool(future[pos]))
+                for decile in range(n_deciles):
+                    session_k = int(decile * n_sessions / n_deciles)
+                    pos = first_eligible.get(session_k)
+                    if pos is None:
+                        continue
+                    by_decile.setdefault((level_name, decile), []).append(bool(future[pos]))
+        prev = current
+
+    def _frame(agg: dict, key_name: str, label) -> pd.DataFrame:
+        columns = ["Level_Name", key_name, "n_months", "touch_months", "touch_pct",
+                   "ci_low", "ci_high", "is_sparse"]
+        records = []
+        for (level_name, key), hits in sorted(agg.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+            stats = bootstrap_probability_ci(pd.Series(hits))
+            records.append({
+                "Level_Name": level_name,
+                key_name: label(key),
+                "n_months": len(hits),
+                "touch_months": int(sum(hits)),
+                "touch_pct": stats["probability"],
+                "ci_low": stats["ci_low"],
+                "ci_high": stats["ci_high"],
+                "is_sparse": bool(len(hits) < sparse_months),
+            })
+        return pd.DataFrame.from_records(records) if records else pd.DataFrame(columns=columns)
+
+    return (
+        _frame(by_index, "Session_Index", lambda k: k),
+        _frame(by_decile, "Decile", lambda d: f"D{d + 1}"),
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
