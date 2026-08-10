@@ -235,3 +235,85 @@ def test_monthly_extremes_runner_writes_every_table_and_the_primary_charts(tmp_p
     # Descriptive only: no train/OOS column anywhere in the monthly outputs.
     assert "Split" not in pd.read_csv(tmp_path / "monthly_rows.csv").columns
     assert "Split" not in pd.read_csv(tmp_path / "high_timing_by_third.csv").columns
+
+
+def _three_month_minute_bars(march_first_session_930_low: float = 299.0) -> list:
+    """
+    Feb / Mar / Apr at 100 / 300 / 400, with March opening at 200 on the evening print.
+
+    The 18:05 bar retaps that 200 open in the thin hours. `march_first_session_930_low`
+    decides whether the 09:31 bar on the first March session also reaches it.
+    """
+    february = _weekday_sessions_in_month(2026, 2, 20)
+    march = _weekday_sessions_in_month(2026, 3, 22)
+    april = _weekday_sessions_in_month(2026, 4, 22)
+    bars = []
+    for session in february:
+        bars += _session_bars(session, 100.0)
+    evening = pd.Timestamp(march[0]).normalize() - pd.Timedelta(hours=6)
+    bars += [
+        (evening, 200.0, 201.0, 199.0, 200.5),
+        (evening + pd.Timedelta(minutes=5), 200.5, 201.0, 199.5, 200.2),
+    ]
+    for position, session in enumerate(march):
+        day = pd.Timestamp(session).normalize()
+        low = march_first_session_930_low if position == 0 else 299.0
+        bars += [
+            (day + pd.Timedelta(hours=9, minutes=31), 300.0, 301.0, low, 300.0),
+            (day + pd.Timedelta(hours=16), 300.0, 301.0, 299.0, 300.0),
+        ]
+    for session in april:
+        bars += _session_bars(session, 400.0)
+    return bars
+
+
+def test_monthly_open_retap_ignores_the_evening_print_and_starts_at_09_30():
+    thin_only = analysis.build_monthly_level_rows(_minute_frame(_three_month_minute_bars()))
+    with_rth = analysis.build_monthly_level_rows(
+        _minute_frame(_three_month_minute_bars(march_first_session_930_low=199.0)))
+
+    def march_open(rows):
+        march = rows[rows["Month_Start"].dt.month.eq(3) & rows["Level_Name"].eq("Monthly_Open")]
+        return march.iloc[0]
+
+    # 18:05 is inside the thin hours that set the 200 open: not a retap.
+    assert bool(march_open(thin_only)["Touched"]) is False
+    assert march_open(thin_only)["Touch_Bars_Total"] == 0
+    assert pd.isna(march_open(thin_only)["First_Touch_Timestamp"])
+
+    # 09:31 on the month's first RTH session is.
+    touched = march_open(with_rth)
+    assert bool(touched["Touched"]) is True
+    assert touched["Touch_Bars_Total"] == 1
+    assert touched["First_Touch_Timestamp"].hour == 9
+    assert touched["First_Touch_Session_Index"] == 0
+    assert touched["First_Touch_Third"] == "Early"
+
+
+def test_monthly_level_rows_cover_every_level_and_skip_the_undefined_prior_month():
+    rows = analysis.build_monthly_level_rows(_minute_frame(_three_month_minute_bars()))
+
+    february = rows[rows["Month_Start"].dt.month.eq(2)]
+    march = rows[rows["Month_Start"].dt.month.eq(3)]
+    # February is the first month in the sample; it has no prior month to reference.
+    assert list(february["Level_Name"]) == ["Monthly_Open"]
+    assert list(march["Level_Name"]) == analysis.MONTHLY_LEVELS
+    assert march.set_index("Level_Name").loc["Prior_Month_Close", "Level_Value"] == 100.0
+    assert march.set_index("Level_Name").loc["Prior_Month_High", "Level_Value"] == 101.0
+    assert bool(march["Is_Partial"].eq(False).all())
+    assert bool(february["Is_Partial"].eq(True).all())
+
+
+def test_monthly_level_touch_distribution_and_first_touch_third_use_complete_months():
+    rows = analysis.build_monthly_level_rows(
+        _minute_frame(_three_month_minute_bars(march_first_session_930_low=199.0)))
+
+    distribution = analysis.monthly_level_touch_distribution(rows)
+    thirds = analysis.monthly_level_first_touch_by_third(rows)
+
+    assert set(distribution["Level_Name"]) <= set(analysis.MONTHLY_LEVELS)
+    assert set(distribution["months"]) == {1}          # only March is complete
+    for column in ["n", "pct", "ci_low", "ci_high", "is_sparse"]:
+        assert column in distribution
+        assert column in thirds
+    assert list(thirds[thirds["Level_Name"].eq("Monthly_Open")]["First_Touch_Third"]) == analysis.MONTH_THIRDS
