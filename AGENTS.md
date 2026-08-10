@@ -140,14 +140,22 @@ These have all been fixed once. Do not reintroduce them.
    row-level bootstrap reports a CI several times too narrow.
 7. **Multiple comparisons.** `strongest_excess_distributions` is the top 10 of ~75
    cells with no correction. It is a shortlist, not a result.
-8. **Unknowable month-state conditioners.** A conditioner must be knowable at the
+8. **Uniform as the null for a position bucket.** "The high formed in the last third
+   54% of the time" is not a 20pp effect over 33.3%. For a driftless random walk the
+   time of the maximum follows the arcsine law, so the no-information baseline is
+   39.2 / 21.6 / 39.2 for thirds, and real drift lifts the last bucket further.
+   Position-bucket tables carry `arcsine_null_pct`; score anything stronger with
+   `extreme_position_null`, whose `shuffle` rung is the one that assumes least.
+   The law applies to equal-width POSITION buckets only, never to weekday, session
+   or week-of-month.
+9. **Unknowable month-state conditioners.** A conditioner must be knowable at the
    time of the row it conditions. Conditioning a daily outcome on the month's
    eventual direction, high, low or close repeats hazard 2 at monthly scale.
    `MONTH_STATE_CONDITIONERS` is the allow-list; `is_whole_month_label` and its test
    are the guard. `Month_Return_So_Far_Pct` runs to the current session's close, so
    against a same-session target it is contemporaneous — `Month_Return_To_Prior_Close_Pct`
    is the fully lagged twin.
-9. **Monthly targets on late-month rows.** A monthly label is forward-looking for a
+10. **Monthly targets on late-month rows.** A monthly label is forward-looking for a
    session in the first third of the month and contemporaneous for one in the last.
    Monthly targets are scored on `Third_In_Month == Early` rows only, recorded in
    `Month_Scope`, and carry `n_months` beside `n` — one monthly label repeats across
