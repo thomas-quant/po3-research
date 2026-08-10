@@ -384,6 +384,10 @@ The week-of-month table carries `months_present` and `avg_sessions`. W5 is days
 24 of the 192 complete months. Its share is still scored against all 192, so it is
 not comparable to theirs — and at n=51 the sparse flag alone would not say so.
 
+The Late/Early split must be read against the arcsine and random-walk nulls, not
+against a uniform 33.3%. See the **Null models** section below for the ladder that
+prices in randomness, drift, volatility and the real return distribution.
+
 ## 9. Monthly Levels
 
 `Monthly_Open`, `Prior_Month_High`, `Prior_Month_Low`, `Prior_Month_Close` — one
@@ -417,6 +421,95 @@ Two rules govern it:
 - **Scope.** Monthly targets are scored on `Third_In_Month == Early` rows only,
   recorded in `Month_Scope`, with `n_months` beside `n`. A late-month row
   "predicting" its own month's close is describing it.
+
+</details>
+
+<details>
+<summary><strong>Null models — what an extreme-timing share should be compared against</strong></summary>
+
+## Uniform Is The Wrong Baseline
+
+"Which third of the month held the high?" invites a 33.3% null. That null is already
+wrong before any market behaviour is involved. For a driftless random walk the time of
+the maximum follows the **arcsine law**, `F(t) = (2/π)·arcsin(√t)`, whose density is
+U-shaped: mass piles up at both ends of the period. Randomness alone puts extremes
+early or late.
+
+The no-information baselines are therefore:
+
+| Buckets | First % | Middle % | Last % |
+| --- | ---: | ---: | ---: |
+| Thirds | 39.2 | 21.6 | 39.2 |
+| Quintiles | 29.5 | 14.1 / 12.8 / 14.1 | 29.5 |
+
+`arcsine_null_shares(n_buckets)` returns these, and the third and quintile timing
+tables carry them as an `arcsine_null_pct` column.
+
+## The Null Ladder
+
+Each rung adds one real feature of the data. ES, 192 complete months, against an
+observed **High-Late of 54.2%**:
+
+| `Null` | High-Late % | Gap (pp) | p |
+| --- | ---: | ---: | ---: |
+| uniform — not produced, and wrong | 33.3 | +20.9 | — |
+| `arcsine` — randomness alone | 39.2 | +15.0 | — |
+| `driftless` — simulated zero-drift walk | 38.2 | +16.0 | 0.000 |
+| `drift` — plus the sample's real drift | 44.7 | +9.4 | 0.004 |
+| `drift_vol` — plus each month's own volatility | 47.3 | +6.8 | 0.064 |
+| `shuffle` — the months' own returns, reordered | 52.5 | +1.7 | 0.586 |
+
+That `driftless` lands on the closed-form arcsine value is the check that the
+simulation is honest, not a separate finding.
+
+Low-Early behaves the same way: observed 52.6 against 39.2 arcsine, 40.3 driftless
+(p=0.000), 47.0 with drift (p=0.13), 49.6 once per-month volatility is added
+(p=0.43), and 53.8 with the months' own returns reordered (p=0.71). So does the
+quintile view — High-Q5 observed 42.7 against 29.5 arcsine, 34.0 with drift
+(p=0.010), 36.3 with volatility (p=0.070) and 41.4 reordered (p=0.694).
+
+Reading down the ladder: roughly 6pp of the apparent effect is the arcsine law, 5pp is
+drift, 3pp is volatility differing between months, and the remaining 5pp is the fat
+right tail of the real monthly return distribution — a Gaussian walk cannot produce
+enough large up-months, and a large up-month puts its high on the last session almost
+surely. That leaves 1.7pp, which is nothing. The `drift` rung looks significant at
+p=0.004 only because a Gaussian walk is the wrong shape for monthly returns; the
+`shuffle` rung, which makes no distributional assumption at all, is the one to read.
+
+Two cautions. The single marginal cell (p=0.064) is one of 16 tested, which is what
+Research Hazard 7 warns about. And 192 months does not buy much power: the null bands
+are roughly ±7pp wide, so this rules out a large sequencing effect, not a small one.
+
+The Bullish/Bearish rows of the timing tables are near-tautological for the same
+reason a large up-month lands its high late — a month that closes up nearly has to
+make its high late. That is why `Bull_Bear` is a whole-month label and is barred from
+being a conditioner.
+
+## API
+
+```python
+# monthly high/low position, in thirds of the month's session list
+extreme_position_null(df, trading_month_start_index(df.index),
+                      intraday_trading_day_index(df.index), n_buckets=3)
+
+# the same question one timeframe up: weekly high/low position, by weekday slot
+extreme_position_null(df, trading_week_monday_index(df.index),
+                      intraday_trading_day_index(df.index), n_buckets=5)
+```
+
+It lives in the `RANDOM-WALK NULL` section of `po3_research/research.py` and is
+timeframe-agnostic: it takes a period key per bar and a position key per bar, so months
+(period=month, position=session), weeks (period=week, position=session) and days
+(period=session, position=bar) are all the same call. `PERIOD_KEY_FUNCS` maps
+`"session"`, `"week"` and `"month"` to the matching index helpers. Controls are
+`RW_NULL_CONTROLS = ["arcsine", "driftless", "drift", "drift_vol", "shuffle"]`. The
+monthly extremes module writes `extreme_timing_null_by_third.csv` and
+`extreme_timing_null_by_quintile.csv`.
+
+One measurement caveat: the observed extreme is located from the real High/Low series,
+while a simulated path has no intra-bar range, so its extreme is a bar-close extreme.
+On ES the two agree on the third-bucket for 187/192 months on the high and 185/192 on
+the low.
 
 </details>
 
