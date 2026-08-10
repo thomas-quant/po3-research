@@ -515,3 +515,27 @@ def test_numeric_month_state_conditioners_bucket_on_train_quantiles():
         "P25 Low", "Middle 25-75%", "P75 High"}
     # The lagged twin has no value on each month's first session.
     assert bucketed["Month_Return_To_Prior_Close_Pct_Bucket"].isna().sum() == 4
+
+
+def test_month_context_runner_writes_two_summaries_with_both_row_sources(tmp_path):
+    months = [_weekday_sessions_in_month(2026, month, 19) for month in (1, 2, 3, 4)]
+    bars = []
+    for offset, sessions in enumerate(months):
+        for session in sessions:
+            day = pd.Timestamp(session).normalize()
+            price = 100.0 + offset * 10
+            for hour, minute in [(18, 0), (0, 0), (9, 30), (13, 0), (16, 0)]:
+                stamp = (day - pd.Timedelta(hours=6)) if hour == 18 else day + pd.Timedelta(hours=hour, minutes=minute)
+                bars.append((stamp, price, price + 1, price - 1, price))
+    source = tmp_path / "bars.parquet"
+    _minute_frame(bars).reset_index(names="datetime_utc").assign(
+        datetime_utc=lambda d: d["datetime_utc"].dt.tz_convert("UTC")).to_parquet(source)
+
+    intraday, weekly = analysis.run_month_context_research(
+        symbol="ES", path=str(source), output_dir=tmp_path / "out")
+
+    written = {p.name for p in (tmp_path / "out").iterdir()}
+    assert written == {"intraday_outcomes_by_month_state.csv", "weekly_outcomes_by_month_state.csv"}
+    assert set(intraday["Row_Source"]) == {"intraday_levels", "relative_path"}
+    assert "Straddles_Month_Boundary" in set(weekly["Conditioner"])
+    assert set(weekly[weekly["Target"].isin(analysis.MONTHLY_TARGETS)]["Month_Scope"]) == {"Early"}
