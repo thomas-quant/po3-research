@@ -4,6 +4,21 @@ Research toolkit for measuring ES and NQ futures path structure from 1-minute OH
 
 This is research infrastructure, not a trading system. “Predictive” means conditional association vs baseline in the sample, not a standalone trade rule.
 
+> **Results below are stale — regeneration pending.** The tracked charts and tables in
+> `output/examples/` were generated on 2026-05-11. Since then the local parquet gained
+> about two months of data, and the methodology was corrected in several places that
+> move these numbers:
+>
+> | Change | Effect on the tables below |
+> | --- | --- |
+> | Weekday now rolls at 18:00 ET instead of the calendar day | Weekly-extreme weekday shares change; Monday no longer carries two overnight sessions |
+> | Weekly targets restricted to Monday/Tuesday rows | The TWAP/VWAP residual-edge table was computed by pooling all weekdays, including Friday rows where the weekly label is contemporaneous |
+> | "Next session" no longer means "day close" | Any next-session figure predates the fix |
+> | `Day bullish` dropped for `Globex_Open` as tautological | That level's day-direction row disappears from the matrix |
+>
+> Re-run the command in [Reproduce These Results](#reproduce-these-results) for current
+> numbers. The method descriptions further down describe the *current* code.
+
 ## Key Findings From Current ES/NQ Sample
 
 ### Weekly extremes skew toward Monday lows and Friday highs
@@ -104,14 +119,26 @@ Generated summary tables:
 - `output/examples/readme_findings_summary.csv`
 - `output/examples/readme_twap_vwap_predictive_summary.csv`
 
-Run the full default ES research pass:
+Run the research modules for a symbol:
 
 ```bash
-python3 analysis.py
+# every module, ES
+python3 -m po3_research --symbol ES --data data/es_1m.parquet
+
+# a subset, NQ
+python3 -m po3_research --symbol NQ --data data/nq_1m.parquet \
+  --modules relative_path path_dependency
 ```
+
+Modules: `weekly_charts`, `weekly_events`, `weekly_open_revisit`, `intraday_levels`,
+`path_dependency`, `relative_path`. Output is written per symbol, so ES and NQ runs do
+not overwrite each other. `python3 analysis.py` still works and accepts the same flags.
 
 <details>
 <summary><strong>How TWAP/VWAP predictive power is measured</strong></summary>
+
+Only matched level/window pairs are scored — a level is never measured against a
+window that closes before the level exists.
 
 For each key level and its matching forward window:
 
@@ -135,6 +162,19 @@ Targets:
 - week bullish %
 - weekly high Friday %
 - weekly low Monday %
+
+Scoring rules:
+
+- **Weekly targets use Monday/Tuesday rows only** (`Weekday_Scope` column). Later in the
+  week a weekly label describes the session being measured rather than following it.
+- `n_weeks` is reported next to `n`. One weekly label repeats across up to five day-rows,
+  so `n` overstates how many independent observations there are.
+- A target identical to the level's own close state is dropped. For `Globex_Open` the
+  level value is the day open, so "day bullish" and "day closes above the level" are the
+  same column.
+- A window with no following session (every `1300_to_Close` row) contributes no
+  next-session observation. It is excluded, not scored as a negative.
+- "Next session" is the next contiguous session block after the window, not the day close.
 
 For each split, level, window, signal, and target:
 
@@ -171,12 +211,24 @@ All session, key-level, trading-day, and weekly grouping logic converts source t
 
 Use `trading_week_monday(ts)`. Do not use `pd.Grouper(freq="W-MON")`; it creates Tuesday → Monday buckets and misclassifies Monday extremes.
 
-## Intraday Trading Day
+## Session Date — One Definition Everywhere
 
-Use `intraday_trading_day(ts)` or `intraday_trading_day_index(index)`:
+The session date rolls at 18:00 ET. `trading_weekday(ts)` and `intraday_trading_day(ts)`
+both use it: Sunday 18:00 and Monday 09:30 are both Monday, Monday 19:00 is Tuesday.
 
-- 18:00 ET and later belongs to the next RTH date.
-- Key opens use New York time.
+That matters for the weekly-extreme tables. Attributing bars by calendar day instead
+gives each weekday a different amount of exposure:
+
+| | Mon | Tue | Wed | Thu | Fri |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Calendar day, hours/week | 28.5 | 23.2 | 23.2 | 22.9 | 17.0 |
+| Session date, hours/week | 23 | 23 | 23 | 23 | 23 |
+
+Under calendar attribution Monday absorbs both Sunday's overnight session and its own,
+while Friday stops at the 17:00 close — so a uniform null is 24.9% for Monday and 14.6%
+for Friday, not 20% each. Session-date attribution removes that.
+
+Key opens use New York time.
 
 ## Sessions
 
@@ -230,8 +282,13 @@ Features include:
 - prior high/low break state
 - range expansion bucket
 - train/OOS split
-- bootstrap confidence intervals
+- bootstrap confidence intervals, clustered on the week
 - survival curves and remaining-event distributions
+
+CIs and the sparse flag count independent weeks (`n_clusters`), not bars: a week
+contributes ~120 correlated rows and exactly one event. `strongest_excess_distributions`
+is still a top-10 shortlist out of ~75 cells with no multiple-comparison correction —
+treat it as a place to look, not a result.
 
 Output path:
 
@@ -278,9 +335,18 @@ Outputs include 15-minute and 1-hour bucket tables.
 
 Links intraday key-level behavior to weekly outcomes using train p25/p75 buckets for minutes to revisit, touch count, and post-revisit excursions.
 
+Summaries are keyed by weekday and report `n_weeks` alongside `n`. A weekly label is
+forward-looking for a Monday row and contemporaneous for a Friday one, and one label
+repeats across up to five day-rows.
+
 ## 7. Relative Path, TWAP/VWAP, and Composite Context
 
 Measures time/distance above/below/touching each key level, window TWAP/VWAP, TWAP/VWAP distance to level, and composite state vs prior defined levels.
+
+Every key level is crossed with every window, so 3 of the 16 combinations per day
+describe a level that does not exist until after the window closes. Those rows carry
+`Level_Defined_By_Window_End = False` and are excluded from the summaries by default
+(`drop_lookahead_level_windows`); the detail CSV keeps them for inspection.
 
 </details>
 
@@ -292,14 +358,15 @@ Generated outputs are local artifacts and ignored by git, except tracked README 
 ```text
 output/
 ├── examples/                              # tracked README result PNGs + summary CSVs
-├── *.png                                  # standard weekly charts
+├── es/                                    # standard weekly charts + experiments, per symbol
+├── nq/
 └── research_events/
-    ├── intraday_levels/
-    ├── intraday_levels_nq/
+    ├── weekly_events_es/                  # one directory per module per symbol
+    ├── weekly_open_revisit_es/
+    ├── intraday_levels_es/
     ├── path_dependency_es/
-    ├── path_dependency_nq/
     ├── relative_path_es/
-    └── relative_path_nq/
+    └── ..._nq/
 ```
 
 </details>
@@ -310,17 +377,19 @@ output/
 Run tests:
 
 ```bash
-python3 -m pytest -q tests/test_event_research.py tests/test_readme_examples.py
-python3 -m py_compile analysis.py scripts/build_readme_examples.py
+python3 -m pytest -q tests/
+python3 -m py_compile analysis.py scripts/build_readme_examples.py po3_research/research.py
 ```
 
 | Path | Purpose |
 | --- | --- |
-| `po3_research/research.py` | research implementation |
+| `po3_research/research.py` | research implementation and CLI |
+| `po3_research/__main__.py` | `python3 -m po3_research` entry point |
 | `analysis.py` | backward-compatible runner/import wrapper |
 | `scripts/build_readme_examples.py` | reproducible README result generator |
 | `tests/test_event_research.py` | regression/unit tests for research helpers |
 | `tests/test_readme_examples.py` | README artifact metadata and script-entry tests |
+| `tests/test_cli.py` | CLI arguments, module selection, output scoping |
 | `data/` | local parquet data, ignored by git |
 | `output/examples/` | tracked README result artifacts |
 

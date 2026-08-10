@@ -349,17 +349,45 @@ def build_event_rows(df: pd.DataFrame) -> pd.DataFrame:
     return rows
 
 
-def bootstrap_probability_ci(values, n_resamples: int = BOOTSTRAP_RESAMPLES, seed: int = 42) -> dict:
-    """Return observed true-rate and bootstrap 95% CI in percent."""
-    arr = pd.Series(values).dropna().astype(bool).to_numpy()
+def bootstrap_probability_ci(values, n_resamples: int = BOOTSTRAP_RESAMPLES, seed: int = 42, clusters=None) -> dict:
+    """
+    Observed true-rate and bootstrap 95% CI in percent.
+
+    `clusters` (normally Week_Start) switches to a cluster bootstrap: whole weeks
+    are resampled instead of individual bars. Bars are not independent draws —
+    a week contributes ~120 correlated rows and exactly one event — so resampling
+    rows reports a CI far narrower than the real uncertainty.
+    """
+    series = pd.Series(values)
+    keep = series.notna()
+    arr = series[keep].astype(bool).to_numpy()
     n = len(arr)
     if n == 0:
-        return {"n": 0, "probability": np.nan, "ci_low": np.nan, "ci_high": np.nan}
+        return {"n": 0, "n_clusters": 0, "probability": np.nan, "ci_low": np.nan, "ci_high": np.nan}
     probability = float(arr.mean() * 100)
     rng = np.random.default_rng(seed)
-    samples = rng.choice(arr, size=(n_resamples, n), replace=True).mean(axis=1) * 100
+
+    if clusters is None:
+        n_clusters = n
+        samples = rng.choice(arr, size=(n_resamples, n), replace=True).mean(axis=1) * 100
+    else:
+        codes = pd.Series(clusters)[keep.to_numpy()].astype("category").cat.codes.to_numpy()
+        n_clusters = int(codes.max()) + 1 if len(codes) else 0
+        if n_clusters == 0:
+            return {"n": n, "n_clusters": 0, "probability": round(probability, 4), "ci_low": np.nan, "ci_high": np.nan}
+        sums = np.bincount(codes, weights=arr.astype(float), minlength=n_clusters)
+        counts = np.bincount(codes, minlength=n_clusters).astype(float)
+        picks = rng.integers(0, n_clusters, size=(n_resamples, n_clusters))
+        samples = sums[picks].sum(axis=1) / counts[picks].sum(axis=1) * 100
+
     lo, hi = np.percentile(samples, [2.5, 97.5])
-    return {"n": n, "probability": round(probability, 4), "ci_low": round(float(lo), 4), "ci_high": round(float(hi), 4)}
+    return {
+        "n": n,
+        "n_clusters": n_clusters,
+        "probability": round(probability, 4),
+        "ci_low": round(float(lo), 4),
+        "ci_high": round(float(hi), 4),
+    }
 
 
 def event_timing_distribution(rows: pd.DataFrame, event: str, group_cols: list) -> pd.DataFrame:
@@ -382,18 +410,29 @@ def conditional_event_distribution(
     seed: int = 42,
     sparse_n: int = SPARSE_N,
 ) -> pd.DataFrame:
-    """Event probability by split and path-state condition with bootstrap CI."""
-    needed = ["Split", event_col] + condition_cols
+    """
+    Event probability by split and path-state condition with a bootstrap CI.
+
+    CIs and the sparse flag are clustered on `Week_Start` when the column is
+    present, so both count independent weeks rather than correlated bars.
+    """
+    cluster_col = "Week_Start" if "Week_Start" in rows else None
+    needed = ["Split", event_col] + condition_cols + ([cluster_col] if cluster_col else [])
     clean = rows[needed].dropna().copy()
     records = []
     for keys, group in clean.groupby(["Split"] + condition_cols, dropna=False):
         if not isinstance(keys, tuple):
             keys = (keys,)
-        stats = bootstrap_probability_ci(group[event_col], n_resamples=n_resamples, seed=seed)
+        stats = bootstrap_probability_ci(
+            group[event_col],
+            n_resamples=n_resamples,
+            seed=seed,
+            clusters=group[cluster_col] if cluster_col else None,
+        )
         rec = {"Split": keys[0]}
         rec.update(dict(zip(condition_cols, keys[1:])))
         rec.update(stats)
-        rec["is_sparse"] = stats["n"] < sparse_n
+        rec["is_sparse"] = stats["n_clusters"] < sparse_n
         records.append(rec)
     return pd.DataFrame(records).sort_values(["Split", "probability"], ascending=[True, False]).reset_index(drop=True)
 
