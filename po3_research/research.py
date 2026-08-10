@@ -31,6 +31,7 @@ TRAIN_END = pd.Timestamp("2023-12-31", tz="America/New_York")
 SPARSE_N = 20
 SPARSE_MONTHS = 20                     # monthly sample floor; 192 complete months in ES
 BOOTSTRAP_RESAMPLES = 1000
+RW_NULL_SIMS = 1000                    # replicas per random-walk null control
 
 # Session definitions (Eastern Time).
 # Asia wraps midnight, so we check hour >= 19 separately.
@@ -1691,6 +1692,10 @@ MONTH_TIMING_CUTS = {
     "day_of_month": ("Day_Of_Month", list(range(1, 32))),
 }
 MONTH_PRIMARY_CUTS = ["third", "quintile", "week_of_month"]
+# Cuts that measure POSITION in the month, so the arcsine law applies to them. The
+# calendar cuts (weekday, session, week-of-month, day-of-month) are not equal-width
+# slices of the period and have no arcsine baseline.
+MONTH_POSITION_CUTS = ["third", "quintile"]
 
 
 def monthly_share_table(monthly: pd.DataFrame, column: str, order: list = None,
@@ -1767,6 +1772,11 @@ def monthly_extreme_timing_tables(df: pd.DataFrame, monthly: pd.DataFrame) -> di
     Primary cuts are session position (thirds, quintiles). Week-of-month, weekday,
     session and day-of-month are secondary views and the week-of-month table carries
     the exposure columns that make its non-comparable buckets visible.
+
+    The position cuts also carry `arcsine_null_pct`: the share a driftless random walk
+    puts in each bucket. It is the no-information baseline for these tables and it is
+    NOT uniform — see `arcsine_null_shares`. Reading a 54% last-third share against
+    33.3% overstates the effect by the 5.8pp the arcsine law supplies for free.
     """
     exposure = month_week_exposure(df, monthly)
     tables = {}
@@ -1777,17 +1787,25 @@ def monthly_extreme_timing_tables(df: pd.DataFrame, monthly: pd.DataFrame) -> di
             if cut == "week_of_month":
                 table = table.merge(
                     exposure.rename(columns={"Week_Of_Month": column}), on=column, how="left")
+            if cut in MONTH_POSITION_CUTS and not table.empty:
+                shares = dict(zip(order, arcsine_null_shares(len(order))))
+                table["arcsine_null_pct"] = table[column].map(shares)
             tables[f"{event.lower()}_timing_by_{cut}"] = table
     return tables
 
 
 def run_monthly_extremes_research(df: pd.DataFrame, symbol: str = None,
-                                  output_dir: Path = None) -> pd.DataFrame:
+                                  output_dir: Path = None,
+                                  n_sim: int = RW_NULL_SIMS) -> pd.DataFrame:
     """
     Monthly extreme-timing tables and charts from the resampled frame.
 
     Descriptive only — no train/OOS split, and no ranking table. Charts cover the
     primary position cuts plus week-of-month.
+
+    The position cuts are also scored against the random-walk null ladder, because
+    the share a month puts in its last third is mostly arithmetic: see the
+    RANDOM-WALK NULL section.
     """
     symbol = symbol or SYMBOL
     out_dir = output_dir or module_output_dir("monthly_extremes", symbol)
@@ -1798,6 +1816,16 @@ def run_monthly_extremes_research(df: pd.DataFrame, symbol: str = None,
     tables = monthly_extreme_timing_tables(df, monthly)
     for name, table in tables.items():
         _write_csv(table, name, output_dir=out_dir)
+
+    print(f"[Research] {symbol} extreme timing vs the random-walk null ...")
+    period_index = trading_month_start_index(df.index)
+    position_index = intraday_trading_day_index(df.index)
+    nulls = {}
+    for cut in MONTH_POSITION_CUTS:
+        _suffix, order = MONTH_TIMING_CUTS[cut]
+        nulls[cut] = extreme_position_null(
+            df, period_index, position_index, n_buckets=len(order), labels=order, n_sim=n_sim)
+        _write_csv(nulls[cut], f"extreme_timing_null_by_{cut}", output_dir=out_dir)
 
     months = int(len(complete_months(monthly)))
     for event in ["high", "low"]:
@@ -1817,7 +1845,232 @@ def run_monthly_extremes_research(df: pd.DataFrame, symbol: str = None,
 
     print(f"\n[Research] Monthly high timing by third ({months} complete months):")
     print(tables["high_timing_by_third"].to_string(index=False))
+    print("\n[Research] High timing vs the random-walk null ladder:")
+    ladder = nulls["third"]
+    print(ladder[ladder["Event"].eq("High")].to_string(index=False))
     return monthly
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RANDOM-WALK NULL
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# "The monthly high formed in the last third 54% of the time" invites comparison
+# against a uniform 33.3%. That baseline is wrong before any market behaviour is
+# involved: for a driftless random walk the time of the maximum follows the ARCSINE
+# LAW, F(t) = 2/pi * arcsin(sqrt t), which is U-shaped — 39.2% at each end and 21.6%
+# in the middle. Add the sample's real upward drift and the last-third share rises
+# again with no path structure whatsoever.
+#
+# This section supplies the ladder of nulls, each rung adding one real feature:
+#
+#   arcsine    closed form, randomness alone. No simulation, no data.
+#   driftless  simulated zero-drift walk. Should recover the arcsine law; that it
+#              does is the check that the machinery is honest.
+#   drift      + the sample's measured per-bar drift.
+#   drift_vol  + each period's own realized volatility.
+#   shuffle    the period's OWN sub-period returns, reordered in place. The
+#              strongest rung: it conditions on the realized return path and
+#              destroys only the sequencing.
+#
+# Nothing here is monthly. It takes a period key per bar and a position key per bar,
+# so months (period=month, position=session), weeks (period=week, position=session)
+# and days (period=session, position=bar) all use the same call.
+
+RW_NULL_CONTROLS = ["arcsine", "driftless", "drift", "drift_vol", "shuffle"]
+PERIOD_KEY_FUNCS = {
+    "session": intraday_trading_day_index,
+    "week": trading_week_monday_index,
+    "month": trading_month_start_index,
+}
+
+
+def arcsine_null_shares(n_buckets: int) -> list:
+    """
+    Share of periods whose extreme lands in each equal-width position bucket under a
+    driftless random walk, in percent.
+
+    The third arcsine law gives the time of the maximum of a Brownian path on [0, 1]
+    the CDF F(t) = 2/pi * arcsin(sqrt t). Differencing it across the bucket edges is
+    the whole calculation — it depends only on how many buckets there are, never on
+    the data, so it costs nothing to report beside every observed share.
+    """
+    edges = np.linspace(0.0, 1.0, n_buckets + 1)
+    cdf = 2 / np.pi * np.arcsin(np.sqrt(edges))
+    return [round(float(v) * 100, 6) for v in np.diff(cdf)]
+
+
+def _bucket_of(position: np.ndarray, n_positions: int, n_buckets: int) -> np.ndarray:
+    """Vectorized `_position_bucket`, returning bucket indexes rather than labels."""
+    return np.minimum(position * n_buckets // max(n_positions, 1), n_buckets - 1)
+
+
+def _null_periods(df: pd.DataFrame, period_index, position_index,
+                  drop_edge_periods: bool) -> list:
+    """
+    Per period: the bar path, its sub-period layout, and where the real extreme fell.
+
+    `Sub_Returns` / `Sub_High_Offset` / `Sub_Low_Offset` describe each sub-period as a
+    net log return plus the log distance from its close up to its high and down to its
+    low. That triple is exactly sufficient for the shuffle control: which sub-period
+    holds the extreme depends only on the running path and those two offsets, never on
+    the bar order inside a sub-period.
+    """
+    period_index = pd.Index(period_index)
+    position_index = pd.Index(position_index)
+    edges = {period_index.min(), period_index.max()} if drop_edge_periods else set()
+
+    log_high = np.log(df["High"].to_numpy())
+    log_low = np.log(df["Low"].to_numpy())
+    log_close = np.log(df["Close"].to_numpy())
+    log_open = np.log(df["Open"].to_numpy())
+
+    out = []
+    for period, positions in pd.Series(np.arange(len(df)), index=period_index).groupby(level=0):
+        if period in edges:
+            continue
+        bars = positions.to_numpy()
+        if len(bars) < 2:
+            continue
+        sub = pd.factorize(position_index[bars])[0]
+        n_sub = int(sub.max()) + 1
+        if n_sub < 2:
+            continue
+        # Bar-level path, used by the simulated walks.
+        returns = np.diff(log_close[bars], prepend=log_open[bars][0])
+        # Sub-period reduction, used by the shuffle control and by the observation.
+        last = np.flatnonzero(np.r_[sub[1:] != sub[:-1], True])
+        sub_close = log_close[bars][last]
+        sub_high = np.maximum.reduceat(log_high[bars], np.r_[0, last[:-1] + 1])
+        sub_low = np.minimum.reduceat(log_low[bars], np.r_[0, last[:-1] + 1])
+        out.append({
+            "Sub_Index": sub,
+            "N_Sub": n_sub,
+            "Returns": returns,
+            "Sigma": float(np.std(returns, ddof=1)) if len(returns) > 1 else 0.0,
+            "Sub_Returns": np.diff(sub_close, prepend=log_open[bars][0]),
+            "Sub_High_Offset": sub_high - sub_close,
+            "Sub_Low_Offset": sub_low - sub_close,
+            # The observation comes from the real High/Low series, so it matches what
+            # `build_monthly` publishes. Simulated paths carry no intra-bar range, so
+            # their extremes are bar-close extremes — on ES the two agree on the third
+            # for 187/192 months (high) and 185/192 (low).
+            "Observed_High": int(sub[int(np.argmax(log_high[bars]))]),
+            "Observed_Low": int(sub[int(np.argmin(log_low[bars]))]),
+        })
+    return out
+
+
+def _simulate_null(periods: list, control: str, n_buckets: int, mu: float, sigma: float,
+                   n_sim: int, rng) -> tuple[np.ndarray, np.ndarray]:
+    """Bucket counts per simulated replica of the whole sample, for high and low."""
+    high = np.zeros((n_sim, n_buckets))
+    low = np.zeros((n_sim, n_buckets))
+    sims = np.arange(n_sim)
+    for period in periods:
+        n_sub = period["N_Sub"]
+        if control == "shuffle":
+            # Reorder the period's own sub-period triples; nothing is resampled.
+            order = np.argsort(rng.random((n_sim, n_sub)), axis=1)
+            path = np.cumsum(period["Sub_Returns"][order], axis=1)
+            hi = np.argmax(path + period["Sub_High_Offset"][order], axis=1)
+            lo = np.argmin(path + period["Sub_Low_Offset"][order], axis=1)
+        else:
+            step = {"driftless": 0.0, "drift": mu, "drift_vol": mu}[control]
+            scale = period["Sigma"] if control == "drift_vol" else sigma
+            path = np.cumsum(rng.normal(step, scale, size=(n_sim, len(period["Returns"]))), axis=1)
+            hi = period["Sub_Index"][np.argmax(path, axis=1)]
+            lo = period["Sub_Index"][np.argmin(path, axis=1)]
+        np.add.at(high, (sims, _bucket_of(hi, n_sub, n_buckets)), 1)
+        np.add.at(low, (sims, _bucket_of(lo, n_sub, n_buckets)), 1)
+    return high / len(periods) * 100, low / len(periods) * 100
+
+
+def extreme_position_null(df: pd.DataFrame, period_index, position_index=None,
+                          n_buckets: int = 3, labels: list = None, controls: list = None,
+                          n_sim: int = RW_NULL_SIMS, seed: int = 42,
+                          drop_edge_periods: bool = True,
+                          sparse_n: int = SPARSE_MONTHS) -> pd.DataFrame:
+    """
+    Observed extreme-timing shares against the random-walk null ladder.
+
+    `period_index` is the period key of every bar (a month start, a week Monday, a
+    session date); `position_index` is the sub-period the position buckets are
+    measured in, defaulting to the bar itself. Both are per-bar arrays, which is what
+    makes this timeframe-agnostic — see `PERIOD_KEY_FUNCS`.
+
+    The first and last periods are dropped by default: they are truncated by the
+    sample edges and cannot hold a real extreme, matching `complete_months`.
+
+    Returns one row per Event × Bucket × Null. `arcsine` is closed form and carries no
+    band or p-value; the simulated rungs carry a 95% band over `n_sim` replicas of the
+    whole sample and a two-sided p — the share of replicas at least as extreme as the
+    observation. p is a sample-level statement, so it is subject to the same
+    multiple-comparisons caveat as every other cell grid here.
+    """
+    controls = list(controls) if controls is not None else RW_NULL_CONTROLS
+    unknown = [c for c in controls if c not in RW_NULL_CONTROLS]
+    if unknown:
+        raise ValueError(f"Unknown control(s): {', '.join(unknown)}. Known: {', '.join(RW_NULL_CONTROLS)}")
+    if labels is None:
+        labels = {3: MONTH_THIRDS, 5: MONTH_QUINTILES}.get(n_buckets) or [
+            f"B{i + 1}" for i in range(n_buckets)]
+    if len(labels) != n_buckets:
+        raise ValueError(f"labels has {len(labels)} entries for {n_buckets} buckets")
+
+    columns = ["Event", "Bucket", "n_periods", "observed_pct", "Null", "null_pct",
+               "ci_low", "ci_high", "p", "is_sparse"]
+    position_index = df.index if position_index is None else position_index
+    periods = _null_periods(df, period_index, position_index, drop_edge_periods)
+    if not periods:
+        return pd.DataFrame(columns=columns)
+
+    n_periods = len(periods)
+    observed = {"High": np.zeros(n_buckets), "Low": np.zeros(n_buckets)}
+    for period in periods:
+        for event in ("High", "Low"):
+            bucket = _bucket_of(np.array(period[f"Observed_{event}"]), period["N_Sub"], n_buckets)
+            observed[event][int(bucket)] += 1
+    observed = {k: v / n_periods * 100 for k, v in observed.items()}
+
+    flat = np.concatenate([p["Returns"] for p in periods])
+    mu, sigma = float(flat.mean()), float(flat.std(ddof=1))
+    arcsine = arcsine_null_shares(n_buckets)
+
+    records = []
+    for control in controls:
+        if control == "arcsine":
+            draws = None
+        else:
+            # One generator per control, seeded the same way, so adding or removing a
+            # control never shifts another one's numbers.
+            draws = _simulate_null(periods, control, n_buckets, mu, sigma, n_sim,
+                                   np.random.default_rng(seed))
+        for event, event_observed in observed.items():
+            samples = None if draws is None else (draws[0] if event == "High" else draws[1])
+            for j, label in enumerate(labels):
+                if samples is None:
+                    null_pct, lo, hi, p = arcsine[j], np.nan, np.nan, np.nan
+                else:
+                    column = samples[:, j]
+                    lo, hi = (round(float(v), 4) for v in np.percentile(column, [2.5, 97.5]))
+                    null_pct = round(float(column.mean()), 4)
+                    p = round(float(min(2 * min(
+                        (column >= event_observed[j]).mean(),
+                        (column <= event_observed[j]).mean()), 1.0)), 4)
+                records.append({
+                    "Event": event,
+                    "Bucket": label,
+                    "n_periods": n_periods,
+                    "observed_pct": round(float(event_observed[j]), 4),
+                    "Null": control,
+                    "null_pct": null_pct,
+                    "ci_low": lo,
+                    "ci_high": hi,
+                    "p": p,
+                    "is_sparse": bool(n_periods < sparse_n),
+                })
+    return pd.DataFrame.from_records(records)[columns]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
