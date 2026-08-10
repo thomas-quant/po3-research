@@ -2097,6 +2097,123 @@ def run_monthly_levels_research(symbol: str = None, path: str = DATA_PATH,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MONTH-STATE CONTEXT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# THE KNOWABILITY RULE
+# A month-state conditioner must be knowable at the time of the row it conditions.
+# Prior-month features and month-to-date path features qualify. The month's eventual
+# direction, high, low or close do not: conditioning a daily outcome on the whole
+# month's label repeats the contemporaneous-label defect removed from the weekly
+# targets. This allow-list is the enforcement point, guarded by a test.
+MONTH_STATE_CONDITIONERS = [
+    "Month_Of_Year",
+    "Session_Pos_In_Month",
+    "Third_In_Month",
+    "Quintile_In_Month",
+    "Week_Of_Month",
+    "Month_Return_So_Far_Pct",
+    "Month_Return_To_Prior_Close_Pct",
+    "Above_Monthly_Open",
+    "Prior_Month_Bull_Bear",
+]
+MONTH_STATE_NUMERIC_CONDITIONERS = [
+    "Session_Pos_In_Month",
+    "Month_Return_So_Far_Pct",
+    "Month_Return_To_Prior_Close_Pct",
+]
+# Every `build_monthly` column that describes the FINISHED month. Targets, never
+# conditioners. `Monthly_Open` is deliberately absent: it is set by the month's
+# first bar and is knowable at every session inside the month.
+WHOLE_MONTH_LABELS = [
+    "Bull_Bear", "Monthly_Close", "Monthly_High", "Monthly_Low",
+    "High_Session_Index", "Low_Session_Index", "High_Session_Pos", "Low_Session_Pos",
+    "High_Third", "Low_Third", "High_Quintile", "Low_Quintile",
+    "High_Week_Of_Month", "Low_Week_Of_Month", "High_Weekday", "Low_Weekday",
+    "High_Session", "Low_Session", "High_Hour", "Low_Hour",
+    "High_Day_Of_Month", "Low_Day_Of_Month",
+]
+MONTHLY_TARGETS = ["Month_Bullish", "Monthly_High_Late", "Monthly_Low_Early"]
+
+
+def is_whole_month_label(column: str) -> bool:
+    """True when `column` describes the completed month rather than its path so far."""
+    return column in WHOLE_MONTH_LABELS
+
+
+def build_month_state_by_session(df: pd.DataFrame, monthly: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per session carrying the month-state conditioners for that session.
+
+    `N_Sessions` comes from the exchange calendar, not from price. It is published
+    in advance, so normalized session position is knowable at session 1 of the month
+    and does not breach the knowability rule.
+
+    `Month_Return_So_Far_Pct` runs monthly open → this session's close, so against a
+    same-session target it is contemporaneous. `Month_Return_To_Prior_Close_Pct` is
+    the fully lagged twin: monthly open → the previous session's close, knowable at
+    this session's open. Both are reported.
+    """
+    session_keys = intraday_trading_day_index(df.index)
+    closes = df.groupby(session_keys)["Close"].last()
+    session_dates = pd.DatetimeIndex(pd.unique(session_keys))
+    frame = pd.DataFrame({
+        "Trading_Day": session_dates,
+        "Month_Start": trading_month_start_index(session_dates),
+    })
+    frame["Session_Index_In_Month"] = frame.groupby("Month_Start").cumcount()
+    frame["N_Sessions"] = frame.groupby("Month_Start")["Trading_Day"].transform("size")
+    frame["Month_Of_Year"] = frame["Month_Start"].dt.month
+    frame["Session_Pos_In_Month"] = np.where(
+        frame["N_Sessions"] > 1,
+        frame["Session_Index_In_Month"] / (frame["N_Sessions"] - 1),
+        0.0,
+    )
+    frame["Third_In_Month"] = [
+        _position_bucket(i, n, MONTH_THIRDS)
+        for i, n in zip(frame["Session_Index_In_Month"], frame["N_Sessions"])
+    ]
+    frame["Quintile_In_Month"] = [
+        _position_bucket(i, n, MONTH_QUINTILES)
+        for i, n in zip(frame["Session_Index_In_Month"], frame["N_Sessions"])
+    ]
+    frame["Week_Of_Month"] = [week_of_month(d) for d in frame["Trading_Day"]]
+
+    labels = monthly.set_index("Month_Start") if not monthly.empty else pd.DataFrame()
+    session_close = frame["Trading_Day"].map(closes)
+    monthly_open = frame["Month_Start"].map(
+        labels["Monthly_Open"] if "Monthly_Open" in labels else pd.Series(dtype=float))
+    frame["Month_Return_So_Far_Pct"] = (session_close / monthly_open - 1) * 100
+    frame["Above_Monthly_Open"] = session_close > monthly_open
+    frame["Month_Return_To_Prior_Close_Pct"] = (
+        frame.groupby("Month_Start")["Month_Return_So_Far_Pct"].shift(1))
+    frame["Prior_Month_Bull_Bear"] = frame["Month_Start"].map(
+        labels["Prev_Bull_Bear"] if "Prev_Bull_Bear" in labels else pd.Series(dtype=object))
+    return frame
+
+
+def build_week_month_state(session_state: pd.DataFrame) -> pd.DataFrame:
+    """
+    Month-state for a trading week, taken from its first session (the Monday).
+
+    Roughly a third of trading weeks span two session months, so the flag matters:
+    the Monday's month-state does not describe the whole week.
+    """
+    state = session_state.copy()
+    state["Week_Start"] = trading_week_monday_index(pd.DatetimeIndex(state["Trading_Day"]))
+    straddles = (
+        state.groupby("Week_Start")["Month_Start"].nunique().gt(1)
+        .rename("Straddles_Month_Boundary").reset_index()
+    )
+    # `drop_duplicates`, not `groupby(...).first()`: the latter takes the first
+    # NON-NULL value per column, so a week whose Monday opens a month would borrow
+    # `Month_Return_To_Prior_Close_Pct` from a later session instead of reporting the
+    # NaN that says the value does not exist yet.
+    monday = state.sort_values("Trading_Day").drop_duplicates("Week_Start", keep="first")
+    return monday.merge(straddles, on="Week_Start", how="left")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
 

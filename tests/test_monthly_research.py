@@ -389,3 +389,62 @@ def test_monthly_levels_runner_writes_every_output(tmp_path):
         "monthly_level_forward_touch_by_session_index.csv",
         "monthly_level_forward_touch_by_decile.csv",
     }
+
+
+def test_month_state_conditioners_contain_no_whole_month_label():
+    monthly = analysis.build_monthly(_four_month_frame())
+
+    for conditioner in analysis.MONTH_STATE_CONDITIONERS:
+        assert not analysis.is_whole_month_label(conditioner), conditioner
+
+    # The guard has teeth: every column build_monthly derives from the finished
+    # month is caught, and none of them leaked into the allow-list.
+    for label in ["Bull_Bear", "Monthly_Close", "Monthly_High", "Monthly_Low",
+                  "High_Third", "Low_Third", "High_Session_Index", "Low_Weekday"]:
+        assert label in monthly.columns
+        assert analysis.is_whole_month_label(label), label
+    assert not set(analysis.MONTH_STATE_CONDITIONERS) & set(analysis.WHOLE_MONTH_LABELS)
+
+
+def test_month_state_by_session_is_knowable_and_carries_a_lagged_return():
+    january = _weekday_sessions_in_month(2026, 1, 21)
+    february = _weekday_sessions_in_month(2026, 2, 20)
+    frame = pd.concat([
+        _hourly_frame(january, [100.0 + i for i in range(21)]),
+        _hourly_frame(february, [100.0 + i for i in range(20)]),
+    ]).sort_index()
+    monthly = analysis.build_monthly(frame)
+
+    state = analysis.build_month_state_by_session(frame, monthly)
+
+    january_state = state[state["Month_Of_Year"].eq(1)].reset_index(drop=True)
+    assert list(january_state["Session_Index_In_Month"]) == list(range(21))
+    assert set(january_state["N_Sessions"]) == {21}
+    assert january_state.loc[0, "Third_In_Month"] == "Early"
+    assert january_state.loc[20, "Third_In_Month"] == "Late"
+    assert january_state.loc[0, "Session_Pos_In_Month"] == 0.0
+    assert january_state.loc[20, "Session_Pos_In_Month"] == 1.0
+    assert january_state.loc[1, "Month_Return_So_Far_Pct"] == pytest.approx(1.0)
+    # The lagged twin is knowable at the session open, so it can condition a target
+    # that includes the same session's close.
+    assert pd.isna(january_state.loc[0, "Month_Return_To_Prior_Close_Pct"])
+    assert january_state.loc[2, "Month_Return_To_Prior_Close_Pct"] == pytest.approx(1.0)
+    assert pd.isna(january_state.loc[0, "Prior_Month_Bull_Bear"])
+    assert set(state[state["Month_Of_Year"].eq(2)]["Prior_Month_Bull_Bear"]) == {"Bullish"}
+    for column in analysis.MONTH_STATE_CONDITIONERS:
+        assert column in state
+
+
+def test_weeks_spanning_two_session_months_are_flagged():
+    march = _weekday_sessions_in_month(2026, 3, 22)
+    april = _weekday_sessions_in_month(2026, 4, 22)
+    frame = pd.concat([_hourly_frame(march), _hourly_frame(april)]).sort_index()
+    monthly = analysis.build_monthly(frame)
+
+    week_state = analysis.build_week_month_state(
+        analysis.build_month_state_by_session(frame, monthly)).set_index("Week_Start")
+
+    straddling = pd.Timestamp("2026-03-30", tz=ET)   # Mar 30-31 then Apr 1-3
+    assert bool(week_state.loc[straddling, "Straddles_Month_Boundary"])
+    assert week_state.loc[straddling, "Month_Start"] == pd.Timestamp("2026-03-01", tz=ET)
+    assert not bool(week_state.loc[pd.Timestamp("2026-03-16", tz=ET), "Straddles_Month_Boundary"])
