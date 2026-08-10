@@ -116,8 +116,10 @@ python3 scripts/build_readme_examples.py \
 
 Generated summary tables:
 
-- `output/examples/readme_findings_summary.csv`
-- `output/examples/readme_twap_vwap_predictive_summary.csv`
+- `output/examples/readme_findings_summary.csv` — every numbered finding above, including
+  the Globex→Midnight state table, with the sample size behind each figure
+- `output/examples/readme_twap_vwap_predictive_summary.csv` — the full TWAP/VWAP matrix,
+  with `Weekday_Scope` and `n_weeks` per row
 
 Run the research modules for a symbol:
 

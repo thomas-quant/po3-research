@@ -313,7 +313,45 @@ def _top_category(series: pd.Series) -> tuple[str, float]:
     return str(pct.index[0]), round(float(pct.iloc[0]), 2)
 
 
-def _build_findings_summary(symbol: str, weekly: pd.DataFrame, df_1m: pd.DataFrame, twap_summary: pd.DataFrame) -> pd.DataFrame:
+def build_globex_midnight_findings(symbol: str, relative_rows: pd.DataFrame) -> list[dict]:
+    """
+    Reproduce the Globex→Midnight state table.
+
+    Signal is the midnight open against the Globex open. It is scored against two
+    targets: the full-day direction (which is measured from the Globex open, so the
+    signal partly describes it) and the strictly forward midnight→close leg.
+    """
+    levels = relative_rows[relative_rows["Window_Name"].eq("Globex_to_Midnight")]
+    globex = levels[levels["Level_Name"].eq("Globex_Open")].set_index("Trading_Day")
+    midnight = levels[levels["Level_Name"].eq("NY_Midnight_Open")].set_index("Trading_Day")
+    shared = globex.index.intersection(midnight.index)
+    if shared.empty:
+        return []
+
+    frame = pd.DataFrame({
+        "Split": globex.loc[shared, "Split"],
+        "Midnight_Above_Globex": midnight.loc[shared, "Level_Value"] > globex.loc[shared, "Level_Value"],
+        "Day_Bullish": globex.loc[shared, "Day_Bullish"].astype(bool),
+        "Midnight_To_Close_Positive": midnight.loc[shared, "Day_Close_Above_Level"].astype(bool),
+    })
+
+    rows: list[dict] = []
+    for split, group in frame.groupby("Split", dropna=False):
+        above = group["Midnight_Above_Globex"].astype(bool)
+        for target_col, label in [("Day_Bullish", "Full day bullish"), ("Midnight_To_Close_Positive", "Midnight to close positive")]:
+            for segment, subset in [("baseline", group[target_col]), ("midnight above globex", group[target_col][above]), ("midnight at or below globex", group[target_col][~above])]:
+                rows.append({
+                    "Symbol": symbol.upper(),
+                    "Metric": f"Globex to midnight state — {label}",
+                    "Split": split,
+                    "Segment": segment,
+                    "Value": _pct(subset),
+                    "Context": f"% of days (n={len(subset)})",
+                })
+    return rows
+
+
+def _build_findings_summary(symbol: str, weekly: pd.DataFrame, df_1m: pd.DataFrame, twap_summary: pd.DataFrame, relative_rows: pd.DataFrame = None) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     symbol = symbol.upper()
     for split, group in [("All", weekly), ("Train", weekly[weekly.index <= TRAIN_END]), ("OOS", weekly[weekly.index > TRAIN_END])]:
@@ -349,6 +387,9 @@ def _build_findings_summary(symbol: str, weekly: pd.DataFrame, df_1m: pd.DataFra
                 "Value": round(float(best["End_State_Adjusted_Delta_Ppt"]), 2),
                 "Context": "ppt edge remaining after end-close-above-level sanity baseline",
             })
+
+    if relative_rows is not None and not relative_rows.empty:
+        rows.extend(build_globex_midnight_findings(symbol, relative_rows))
     return pd.DataFrame(rows, columns=FINDINGS_COLUMNS)
 
 
@@ -499,7 +540,7 @@ def build_examples(symbol: str, data_path: Path, output_dir: Path, resample_to: 
     relative_rows = build_relative_level_path_rows(df_1m)
     twap_summary = _build_twap_vwap_summary(symbol, relative_rows, weekly)
     _plot_twap_vwap_matrix(twap_summary, symbol, output_dir / matrix[f"{symbol.lower()}_twap_vwap_predictive_matrix.png"].filename)
-    findings = _build_findings_summary(symbol, weekly, df_1m, twap_summary)
+    findings = _build_findings_summary(symbol, weekly, df_1m, twap_summary, relative_rows)
     return findings, twap_summary
 
 
