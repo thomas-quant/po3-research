@@ -1821,6 +1821,174 @@ def run_monthly_extremes_research(df: pd.DataFrame, symbol: str = None,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MONTHLY LEVEL RESEARCH
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# A monthly level stays live for a whole month, so it cannot be an entry in
+# KEY_LEVEL_TIMES, which is keyed by time of day. It gets its own builder.
+MONTHLY_LEVELS = ["Monthly_Open", "Prior_Month_High", "Prior_Month_Low", "Prior_Month_Close"]
+MONTHLY_LEVEL_COUNT_FROM = (9, 30)
+
+
+def _monthly_level_eligible_start(index: pd.DatetimeIndex) -> int:
+    """
+    Position of the first bar at or after 09:30 ET on the month's first RTH session.
+
+    Touch counting cannot start at the 18:00 print that sets `Monthly_Open`: that
+    price is made in thin hours and is retested within minutes, so the retap rate
+    comes out ~100% and carries no information. This is the monthly analogue of
+    `_is_weekly_open_revisit_eligible`, which starts weekly-open counting at Monday
+    09:30 for the same reason. Prior-month levels are known before the month opens
+    and use the same guard for comparability.
+
+    The window is bounded above by 18:00 so the evening reopen — which shares a
+    session date with the RTH hours that follow it — cannot qualify.
+    """
+    sessions = intraday_trading_day_index(index)
+    minute_of_day = np.asarray(index.hour) * 60 + np.asarray(index.minute)
+    start_minute = MONTHLY_LEVEL_COUNT_FROM[0] * 60 + MONTHLY_LEVEL_COUNT_FROM[1]
+    rth = (minute_of_day >= start_minute) & (minute_of_day < 18 * 60)
+    # An RTH session is one holding a bar at or after 09:30; a holiday can leave the
+    # month's first session date without one.
+    for session in pd.DatetimeIndex(pd.unique(sessions)):
+        candidates = np.flatnonzero((sessions == session) & rth)
+        if len(candidates):
+            return int(candidates[0])
+    return len(index)
+
+
+def _month_level_context(m: pd.DataFrame) -> tuple:
+    """Index, ordered session dates, per-bar session index, and the eligible start."""
+    idx = m.index
+    sessions = intraday_trading_day_index(idx)
+    ordered = pd.DatetimeIndex(pd.unique(sessions))
+    return idx, ordered, ordered.get_indexer(sessions), _monthly_level_eligible_start(idx)
+
+
+def _monthly_level_values(m: pd.DataFrame, prev: dict) -> dict:
+    """The four monthly levels for this month; prior-month entries are NaN for month one."""
+    return {
+        "Monthly_Open": float(m["Open"].iloc[0]),
+        "Prior_Month_High": prev["Monthly_High"] if prev else np.nan,
+        "Prior_Month_Low": prev["Monthly_Low"] if prev else np.nan,
+        "Prior_Month_Close": prev["Monthly_Close"] if prev else np.nan,
+    }
+
+
+def build_monthly_level_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
+    """One row per session month × monthly level with touch and excursion context."""
+    records = []
+    month_keys = trading_month_start_index(df_1m.index)
+    first_month, last_month = month_keys.min(), month_keys.max()
+    prev = None
+    for month_start, m in df_1m.groupby(month_keys, sort=True):
+        m = m.sort_index()
+        current = {
+            "Monthly_High": float(m["High"].max()),
+            "Monthly_Low": float(m["Low"].min()),
+            "Monthly_Close": float(m["Close"].iloc[-1]),
+        }
+        idx, ordered, session_index, start_pos = _month_level_context(m)
+        if len(m) >= 2 and start_pos < len(idx):
+            n_sessions = len(ordered)
+            lows = m["Low"].to_numpy()
+            highs = m["High"].to_numpy()
+            values = _monthly_level_values(m, prev)
+            for level_name in MONTHLY_LEVELS:
+                value = values[level_name]
+                if pd.isna(value):
+                    continue
+                touch = (lows <= value) & (highs >= value)
+                touch[:start_pos] = False
+                touched = bool(touch.any())
+                rec = {
+                    "Month_Start": month_start,
+                    "Month_Of_Year": int(month_start.month),
+                    "N_Sessions": n_sessions,
+                    "Is_Partial": bool(month_start == first_month or month_start == last_month),
+                    "Level_Name": level_name,
+                    "Level_Value": value,
+                    "Touched": touched,
+                    "Touch_Bars_Total": int(touch.sum()),
+                    "Touch_Sessions": int(len(np.unique(session_index[touch]))),
+                    "Month_Close_Above_Level": bool(current["Monthly_Close"] > value),
+                }
+                if touched:
+                    first_pos = int(np.flatnonzero(touch)[0])
+                    first_ts = idx[first_pos]
+                    first_index = int(session_index[first_pos])
+                    rec.update({
+                        "First_Touch_Timestamp": first_ts,
+                        "First_Touch_Session_Index": first_index,
+                        "First_Touch_Session_Pos": round(first_index / (n_sessions - 1), 6) if n_sessions > 1 else 0.0,
+                        "First_Touch_Third": _position_bucket(first_index, n_sessions, MONTH_THIRDS),
+                        "First_Touch_Weekday": trading_weekday(first_ts),
+                        "First_Touch_Session": session_of(first_ts),
+                        "Post_Touch_High_Excursion": float(highs[first_pos:].max() - value),
+                        "Post_Touch_Low_Excursion": float(value - lows[first_pos:].min()),
+                    })
+                else:
+                    rec.update({
+                        "First_Touch_Timestamp": pd.NaT,
+                        "First_Touch_Session_Index": np.nan,
+                        "First_Touch_Session_Pos": np.nan,
+                        "First_Touch_Third": np.nan,
+                        "First_Touch_Weekday": np.nan,
+                        "First_Touch_Session": np.nan,
+                        "Post_Touch_High_Excursion": np.nan,
+                        "Post_Touch_Low_Excursion": np.nan,
+                    })
+                records.append(rec)
+        prev = current
+    return pd.DataFrame.from_records(records)
+
+
+def monthly_level_touch_distribution(rows: pd.DataFrame,
+                                     sparse_months: int = SPARSE_MONTHS) -> pd.DataFrame:
+    """Touch rate, touch sessions and touch bars per monthly level, over complete months."""
+    clean = rows[~rows["Is_Partial"].astype(bool)]
+    records = []
+    for level_name, group in clean.groupby("Level_Name", dropna=False):
+        stats = bootstrap_probability_ci(group["Touched"])
+        records.append({
+            "Level_Name": level_name,
+            "months": int(len(group)),
+            "n": int(group["Touched"].sum()),
+            "pct": stats["probability"],
+            "ci_low": stats["ci_low"],
+            "ci_high": stats["ci_high"],
+            "is_sparse": bool(len(group) < sparse_months),
+            "avg_touch_sessions": round(float(group["Touch_Sessions"].mean()), 4),
+            "median_touch_sessions": round(float(group["Touch_Sessions"].median()), 4),
+            "avg_touch_bars": round(float(group["Touch_Bars_Total"].mean()), 4),
+            "month_close_above_level_pct": round(float(group["Month_Close_Above_Level"].mean() * 100), 4),
+        })
+    return pd.DataFrame.from_records(records)
+
+
+def monthly_level_first_touch_by_third(rows: pd.DataFrame,
+                                       sparse_months: int = SPARSE_MONTHS) -> pd.DataFrame:
+    """Share of touched complete months whose first touch fell in each session third."""
+    clean = rows[(~rows["Is_Partial"].astype(bool)) & rows["Touched"].astype(bool)]
+    records = []
+    for level_name, group in clean.groupby("Level_Name", dropna=False):
+        for third in MONTH_THIRDS:
+            hits = group["First_Touch_Third"].eq(third)
+            stats = bootstrap_probability_ci(hits)
+            records.append({
+                "Level_Name": level_name,
+                "First_Touch_Third": third,
+                "months": int(len(group)),
+                "n": int(hits.sum()),
+                "pct": stats["probability"],
+                "ci_low": stats["ci_low"],
+                "ci_high": stats["ci_high"],
+                "is_sparse": bool(int(hits.sum()) < sparse_months),
+            })
+    return pd.DataFrame.from_records(records)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
