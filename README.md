@@ -46,6 +46,11 @@ Positive Globex→Midnight change is a strong classifier for the full-day bullis
 
 Takeaway: “Midnight above Globex” mostly says the day is already bullish relative to the Globex open. It is useful as an early day-state label, but the forward-only Midnight→Close test shows little/no continuation edge.
 
+Note: the ES Train row repeats 54.63% in both baseline columns. Those are separate
+quantities and recomputation puts them about a point apart, so that cell is a
+transcription error. This table is now generated into `readme_findings_summary.csv`,
+so the next regeneration will replace it.
+
 ### Midnight-open retaps remain common after the cash open
 
 | Symbol | Train condition | Probability midnight open is touched later |
