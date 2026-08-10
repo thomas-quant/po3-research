@@ -1682,6 +1682,105 @@ def complete_months(monthly: pd.DataFrame) -> pd.DataFrame:
     return monthly[~monthly["Is_Partial"].astype(bool)].copy()
 
 
+MONTH_TIMING_CUTS = {
+    "third": ("Third", MONTH_THIRDS),
+    "quintile": ("Quintile", MONTH_QUINTILES),
+    "week_of_month": ("Week_Of_Month", WEEK_OF_MONTH_ORDER),
+    "weekday": ("Weekday", DAYS),
+    "session": ("Session", SESSION_ORDER),
+    "day_of_month": ("Day_Of_Month", list(range(1, 32))),
+}
+MONTH_PRIMARY_CUTS = ["third", "quintile", "week_of_month"]
+
+
+def monthly_share_table(monthly: pd.DataFrame, column: str, order: list = None,
+                        sparse_months: int = SPARSE_MONTHS) -> pd.DataFrame:
+    """
+    Share of complete months whose `column` falls in each bucket, with a CI.
+
+    `build_monthly` emits exactly one row per month, so the month IS the
+    independent unit and `bootstrap_probability_ci` needs no `clusters` argument.
+    Clustering is only needed where one label is spread across many correlated
+    rows, as it is for the bar-level weekly work.
+
+    `months` is the denominator, `n` the bucket count. Shares sum to 100 within a
+    direction scope, so a bucket that only exists in some months needs the exposure
+    columns from `month_week_exposure` to be readable.
+    """
+    rows = complete_months(monthly)
+    scopes = [
+        ("All", rows),
+        ("Bullish", rows[rows["Bull_Bear"].eq("Bullish")]),
+        ("Bearish", rows[rows["Bull_Bear"].eq("Bearish")]),
+    ]
+    records = []
+    for scope, scope_rows in scopes:
+        values = scope_rows[column]
+        buckets = order if order is not None else sorted(values.dropna().unique().tolist(), key=str)
+        for bucket in buckets:
+            hits = values.eq(bucket)
+            stats = bootstrap_probability_ci(hits)
+            records.append({
+                "Direction_Scope": scope,
+                column: bucket,
+                "months": int(len(scope_rows)),
+                "n": int(hits.sum()),
+                "pct": stats["probability"],
+                "ci_low": stats["ci_low"],
+                "ci_high": stats["ci_high"],
+                "is_sparse": bool(int(hits.sum()) < sparse_months),
+            })
+    return pd.DataFrame.from_records(records)
+
+
+def month_week_exposure(df: pd.DataFrame, monthly: pd.DataFrame) -> pd.DataFrame:
+    """
+    Sessions per calendar week bucket per complete month.
+
+    A share means nothing without knowing how much of the period the bucket spans,
+    and how often it exists at all. W5 appears in only ~41 of 192 ES months and
+    covers ~2 sessions against W1–W4's ~5 — above the SPARSE_MONTHS floor, so the
+    flag alone would not catch it. This is the generalization of the exposure fix
+    applied to the weekly weekday buckets.
+    """
+    session_dates = pd.DatetimeIndex(pd.unique(intraday_trading_day_index(df.index)))
+    frame = pd.DataFrame({
+        "Month_Start": trading_month_start_index(session_dates),
+        "Week_Of_Month": [week_of_month(d) for d in session_dates],
+    })
+    keep = set(complete_months(monthly)["Month_Start"])
+    frame = frame[frame["Month_Start"].isin(keep)]
+    counts = frame.groupby(["Month_Start", "Week_Of_Month"]).size().reset_index(name="sessions")
+    out = (
+        counts.groupby("Week_Of_Month")
+        .agg(months_present=("Month_Start", "nunique"), avg_sessions=("sessions", "mean"))
+        .reset_index()
+    )
+    out["avg_sessions"] = out["avg_sessions"].round(4)
+    return out
+
+
+def monthly_extreme_timing_tables(df: pd.DataFrame, monthly: pd.DataFrame) -> dict:
+    """
+    Every monthly extreme-timing cut, keyed by output filename stem.
+
+    Primary cuts are session position (thirds, quintiles). Week-of-month, weekday,
+    session and day-of-month are secondary views and the week-of-month table carries
+    the exposure columns that make its non-comparable buckets visible.
+    """
+    exposure = month_week_exposure(df, monthly)
+    tables = {}
+    for event in ["High", "Low"]:
+        for cut, (suffix, order) in MONTH_TIMING_CUTS.items():
+            column = f"{event}_{suffix}"
+            table = monthly_share_table(monthly, column, order=order)
+            if cut == "week_of_month":
+                table = table.merge(
+                    exposure.rename(columns={"Week_Of_Month": column}), on=column, how="left")
+            tables[f"{event.lower()}_timing_by_{cut}"] = table
+    return tables
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -156,3 +156,64 @@ def test_monthly_rows_carry_prior_month_direction():
     assert list(monthly["Bull_Bear"]) == ["Bullish", "Bearish"]
     assert pd.isna(monthly.iloc[0]["Prev_Bull_Bear"])
     assert monthly.iloc[1]["Prev_Bull_Bear"] == "Bullish"
+
+
+def _four_month_frame() -> pd.DataFrame:
+    """Jan and Apr partial, Feb and Mar complete. Feb 2026 has no W5; Mar 2026 has two."""
+    months = [
+        _weekday_sessions_in_month(2026, 1, 21),
+        _weekday_sessions_in_month(2026, 2, 20),
+        _weekday_sessions_in_month(2026, 3, 22),
+        _weekday_sessions_in_month(2026, 4, 22),
+    ]
+    return pd.concat([_hourly_frame(m) for m in months]).sort_index()
+
+
+def test_monthly_share_table_reports_n_ci_and_a_sparse_flag_per_bucket():
+    frame = _four_month_frame()
+    monthly = analysis.build_monthly(frame)
+
+    table = analysis.monthly_share_table(monthly, "High_Third", order=analysis.MONTH_THIRDS)
+
+    overall = table[table["Direction_Scope"].eq("All")]
+    assert list(overall["High_Third"]) == ["Early", "Mid", "Late"]
+    assert set(overall["months"]) == {2}                 # only the complete months
+    assert set(table["Direction_Scope"]) == {"All", "Bullish", "Bearish"}
+    for column in ["n", "pct", "ci_low", "ci_high", "is_sparse"]:
+        assert column in table
+    assert overall["pct"].sum() == pytest.approx(100.0)
+    assert bool(overall["is_sparse"].all())              # 2 months is far under SPARSE_MONTHS
+
+
+def test_week_of_month_table_reports_exposure_and_w5_spans_less_of_the_month():
+    frame = _four_month_frame()
+    monthly = analysis.build_monthly(frame)
+
+    exposure = analysis.month_week_exposure(frame, monthly)
+    tables = analysis.monthly_extreme_timing_tables(frame, monthly)
+    table = tables["high_timing_by_week_of_month"]
+
+    exposure = exposure.set_index("Week_Of_Month")
+    assert exposure.loc["W5", "months_present"] == 1     # February 2026 has no W5 at all
+    assert exposure.loc["W1", "months_present"] == 2
+    assert exposure.loc["W5", "avg_sessions"] < exposure.loc["W1", "avg_sessions"]
+
+    assert "months_present" in table
+    assert "avg_sessions" in table
+    w5 = table[table["High_Week_Of_Month"].eq("W5") & table["Direction_Scope"].eq("All")].iloc[0]
+    w1 = table[table["High_Week_Of_Month"].eq("W1") & table["Direction_Scope"].eq("All")].iloc[0]
+    assert w5["months_present"] < w1["months_present"]
+    assert w5["avg_sessions"] < w1["avg_sessions"]
+
+
+def test_every_extreme_timing_cut_is_produced_for_high_and_low():
+    frame = _four_month_frame()
+    monthly = analysis.build_monthly(frame)
+
+    tables = analysis.monthly_extreme_timing_tables(frame, monthly)
+
+    assert set(tables) == {
+        f"{event}_timing_by_{cut}"
+        for event in ["high", "low"]
+        for cut in ["third", "quintile", "week_of_month", "weekday", "session", "day_of_month"]
+    }
