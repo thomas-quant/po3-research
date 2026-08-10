@@ -388,6 +388,7 @@ def test_monthly_levels_runner_writes_every_output(tmp_path):
         "monthly_level_first_touch_by_third.csv",
         "monthly_level_forward_touch_by_session_index.csv",
         "monthly_level_forward_touch_by_decile.csv",
+        "monthly_level_touch_null.csv",
     }
 
 
@@ -570,3 +571,66 @@ def test_monthly_extremes_runner_writes_the_random_walk_null_tables(tmp_path):
     table = pd.read_csv(tmp_path / "extreme_timing_null_by_third.csv")
     assert set(table["Null"]) == set(analysis.RW_NULL_CONTROLS)
     assert set(table["Bucket"]) == set(analysis.MONTH_THIRDS)
+
+
+def test_monthly_level_touch_null_ladder_prices_in_drift():
+    """
+    The touch null must reproduce a drifting series' level-touch asymmetry.
+
+    On an upward path the level above spot is reached far more often than the one
+    below, with no level-specific behaviour involved. That is exactly what the ladder
+    exists to say, so the drift rung must land near the observation while a driftless
+    walk does not.
+    """
+    rng = np.random.default_rng(7)
+    sessions = []
+    day = pd.Timestamp("2021-01-04")
+    for _ in range(120):
+        while day.dayofweek >= 5:
+            day += pd.Timedelta(days=1)
+        sessions.append(day)
+        day += pd.Timedelta(days=1)
+    price = 100.0
+    bars = []
+    for session in sessions:
+        for minute in range(0, 600, 10):
+            price *= float(np.exp(0.0004 + rng.normal(0, 0.002)))
+            bars.append((pd.Timestamp(session).normalize() + pd.Timedelta(hours=9, minutes=30)
+                         + pd.Timedelta(minutes=minute), price, price * 1.001, price * 0.999, price))
+    index = pd.DatetimeIndex([b[0] for b in bars]).tz_localize(
+        ET, ambiguous=True, nonexistent="shift_forward")
+    frame = pd.DataFrame(
+        {"Open": [b[1] for b in bars], "High": [b[2] for b in bars],
+         "Low": [b[3] for b in bars], "Close": [b[4] for b in bars],
+         "Volume": [10.0] * len(bars)}, index=index).sort_index()
+
+    table = analysis.monthly_level_touch_null(frame, n_sim=60)
+
+    assert set(table["Null"]) == set(analysis.MONTHLY_LEVEL_NULL_CONTROLS)
+    # arcsine is a statement about the time of the maximum and cannot price a touch.
+    assert "arcsine" not in set(table["Null"])
+    assert {"observed_pct", "null_pct", "ci_low", "ci_high", "p"} <= set(table.columns)
+    high = table[table["Level_Name"].eq("Prior_Month_High")]
+    low = table[table["Level_Name"].eq("Prior_Month_Low")]
+    assert not high.empty and not low.empty
+    # The drift asymmetry is the point: the level above is reached more often.
+    assert float(high["observed_pct"].iloc[0]) > float(low["observed_pct"].iloc[0])
+    # And the rung that carries drift explains the observation better than the one that
+    # does not, which is what makes the ladder informative rather than decorative.
+    # Scored on the upper level: this path drifts hard enough that the lower one is
+    # never revisited under any rung, so its gaps are all zero and separate nothing.
+    observed_high = float(high["observed_pct"].iloc[0])
+    driftless_gap = abs(float(high[high["Null"].eq("driftless")]["null_pct"].iloc[0]) - observed_high)
+    drift_gap = abs(float(high[high["Null"].eq("drift")]["null_pct"].iloc[0]) - observed_high)
+    assert drift_gap < driftless_gap
+
+
+def test_monthly_levels_runner_writes_the_touch_null(tmp_path, monkeypatch):
+    """The runner must publish the ladder beside the touch rates it qualifies."""
+    frame = _four_month_frame()
+    monkeypatch.setattr(analysis, "load_1m_source", lambda path: frame)
+
+    analysis.run_monthly_levels_research(symbol="ES", output_dir=tmp_path)
+
+    written = {p.name for p in tmp_path.iterdir()}
+    assert "monthly_level_touch_null.csv" in written

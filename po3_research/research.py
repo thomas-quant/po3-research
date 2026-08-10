@@ -2319,6 +2319,184 @@ def monthly_level_forward_touch(df_1m: pd.DataFrame, n_deciles: int = 10,
     )
 
 
+# ───────────────────────────────────────────────────────────────────────────────
+# LEVEL TOUCH NULL
+#
+# "Prior_Month_High is touched in 69% of months, Prior_Month_Low in 31%" reads as a
+# statement about levels. It is mostly a statement about DRIFT. In an upward-drifting
+# series the level sitting above spot is reached far more often than the one below,
+# with no level-specific behaviour involved at all.
+#
+# The extreme-timing work already carries a ladder that prices this in. Touch rate had
+# none, so this is the analogue — same controls, same seeding discipline, same
+# sample-level p. `arcsine` is absent: it is a closed form for the TIME OF THE MAXIMUM
+# and says nothing about whether a fixed price is reached.
+#
+# The statistic is P(level touched between the 09:30 eligibility guard and month end),
+# so every rung is simulated from the same starting bar the observation uses, with the
+# level held at its real log distance from that bar's open.
+MONTHLY_LEVEL_NULL_CONTROLS = ["driftless", "drift", "drift_vol", "shuffle"]
+# Simulated paths step hourly, not every minute. Whether a walk reaches a level is a
+# property of the CONTINUOUS path's running extreme, and 1-minute discretization
+# approximates that no better than hourly while costing 60x the draws — a month holds
+# ~30,000 minute bars against ~500 hourly ones. The observation is still measured on
+# the full 1-minute series; only the simulation is strided.
+MONTHLY_LEVEL_NULL_STRIDE = 60
+
+
+def _level_null_months(df_1m: pd.DataFrame, stride: int = MONTHLY_LEVEL_NULL_STRIDE) -> list:
+    """
+    Per complete month: the eligible path, its session reduction, and each level's
+    log distance from the first eligible bar.
+
+    Distances are logs from one fixed reference — the open of the first eligible bar —
+    so a simulated path starting at 0 is directly comparable to the real one, and the
+    level values never have to be re-derived in price space.
+    """
+    months = []
+    month_keys = trading_month_start_index(df_1m.index)
+    first_month, last_month = month_keys.min(), month_keys.max()
+    prev = None
+    for month_start, m in df_1m.groupby(month_keys, sort=True):
+        m = m.sort_index()
+        current = {
+            "Monthly_High": float(m["High"].max()),
+            "Monthly_Low": float(m["Low"].min()),
+            "Monthly_Close": float(m["Close"].iloc[-1]),
+        }
+        idx, ordered, session_index, start_pos = _month_level_context(m)
+        partial = month_start == first_month or month_start == last_month
+        if len(m) >= 2 and start_pos < len(idx) - 1 and not partial:
+            lows = m["Low"].to_numpy()[start_pos:]
+            highs = m["High"].to_numpy()[start_pos:]
+            closes = m["Close"].to_numpy()[start_pos:]
+            opens = m["Open"].to_numpy()[start_pos:]
+            sub = session_index[start_pos:] - session_index[start_pos]
+            n_sub = int(sub.max()) + 1
+            if n_sub >= 2:
+                ref = float(opens[0])
+                log_close = np.log(closes)
+                # Strided for the simulated rungs; see MONTHLY_LEVEL_NULL_STRIDE. The
+                # final close is kept so the path always spans the whole month.
+                keep = np.union1d(np.arange(0, len(log_close), stride), [len(log_close) - 1])
+                returns = np.diff(log_close[keep], prepend=np.log(ref))
+                # Session reduction, as in `_null_periods`: the shuffle control needs
+                # each session's net return plus its high/low offsets, and nothing else.
+                last = np.flatnonzero(np.r_[sub[1:] != sub[:-1], True])
+                sub_close = log_close[last]
+                sub_high = np.log(np.maximum.reduceat(highs, np.r_[0, last[:-1] + 1]))
+                sub_low = np.log(np.minimum.reduceat(lows, np.r_[0, last[:-1] + 1]))
+                values = _monthly_level_values(m, prev)
+                levels = {}
+                for level_name in MONTHLY_LEVELS:
+                    value = values[level_name]
+                    if pd.isna(value) or value <= 0:
+                        continue
+                    touch = (lows <= value) & (highs >= value)
+                    levels[level_name] = {
+                        "Distance": float(np.log(value) - np.log(ref)),
+                        "Observed": bool(touch.any()),
+                    }
+                if levels:
+                    months.append({
+                        "N_Sub": n_sub,
+                        "Returns": returns,
+                        "Sigma": float(np.std(returns, ddof=1)) if len(returns) > 1 else 0.0,
+                        "Sub_Returns": np.diff(sub_close, prepend=np.log(ref)),
+                        "Sub_High_Offset": sub_high - sub_close,
+                        "Sub_Low_Offset": sub_low - sub_close,
+                        "Levels": levels,
+                    })
+        prev = current
+    return months
+
+
+def _simulate_level_touch(months: list, control: str, level_name: str, mu: float,
+                          sigma: float, n_sim: int, rng) -> np.ndarray:
+    """
+    Touch rate per simulated replica of the whole sample, for one level.
+
+    The simulated walks carry no intra-bar range, so a level is counted as touched when
+    the bar-close path reaches its distance: `max(path) >= d` above spot, `min(path)
+    <= d` below. `shuffle` keeps the month's own session highs and lows, so it tests
+    containment — `low_i <= d <= high_i` for some session — which is exactly the real
+    test. That asymmetry makes `shuffle` the strictest rung, which is the point of it.
+    """
+    hits = np.zeros(n_sim)
+    n_months = 0
+    for month in months:
+        level = month["Levels"].get(level_name)
+        if level is None:
+            continue
+        n_months += 1
+        d = level["Distance"]
+        if control == "shuffle":
+            order = np.argsort(rng.random((n_sim, month["N_Sub"])), axis=1)
+            path = np.cumsum(month["Sub_Returns"][order], axis=1)
+            hi = path + month["Sub_High_Offset"][order]
+            lo = path + month["Sub_Low_Offset"][order]
+            hits += ((lo <= d) & (hi >= d)).any(axis=1)
+        else:
+            step = {"driftless": 0.0, "drift": mu, "drift_vol": mu}[control]
+            scale = month["Sigma"] if control == "drift_vol" else sigma
+            path = np.cumsum(rng.normal(step, scale, size=(n_sim, len(month["Returns"]))), axis=1)
+            hits += (path.max(axis=1) >= d) if d >= 0 else (path.min(axis=1) <= d)
+    return hits / max(n_months, 1) * 100
+
+
+def monthly_level_touch_null(df_1m: pd.DataFrame, controls: list = None,
+                             n_sim: int = RW_NULL_SIMS, seed: int = 42,
+                             sparse_months: int = SPARSE_MONTHS) -> pd.DataFrame:
+    """
+    Observed monthly level touch rate against the random-walk null ladder.
+
+    One row per Level_Name × Null. `p` is two-sided over `n_sim` replicas of the whole
+    sample and is a sample-level statement, subject to the same multiple-comparisons
+    caveat as every other cell grid here.
+    """
+    controls = list(controls) if controls is not None else MONTHLY_LEVEL_NULL_CONTROLS
+    unknown = [c for c in controls if c not in MONTHLY_LEVEL_NULL_CONTROLS]
+    if unknown:
+        raise ValueError(
+            f"Unknown control(s): {', '.join(unknown)}. "
+            f"Known: {', '.join(MONTHLY_LEVEL_NULL_CONTROLS)}")
+
+    columns = ["Level_Name", "n_months", "observed_pct", "Null", "null_pct",
+               "ci_low", "ci_high", "p", "is_sparse"]
+    months = _level_null_months(df_1m)
+    if not months:
+        return pd.DataFrame(columns=columns)
+
+    flat = np.concatenate([m["Returns"] for m in months])
+    mu, sigma = float(flat.mean()), float(flat.std(ddof=1))
+
+    records = []
+    for level_name in MONTHLY_LEVELS:
+        present = [m for m in months if level_name in m["Levels"]]
+        if not present:
+            continue
+        observed = float(np.mean([m["Levels"][level_name]["Observed"] for m in present]) * 100)
+        for control in controls:
+            # One generator per control, seeded the same way, so adding or removing a
+            # control never shifts another one's numbers.
+            column = _simulate_level_touch(present, control, level_name, mu, sigma,
+                                           n_sim, np.random.default_rng(seed))
+            lo, hi = (round(float(v), 4) for v in np.percentile(column, [2.5, 97.5]))
+            records.append({
+                "Level_Name": level_name,
+                "n_months": len(present),
+                "observed_pct": round(observed, 4),
+                "Null": control,
+                "null_pct": round(float(column.mean()), 4),
+                "ci_low": lo,
+                "ci_high": hi,
+                "p": round(float(min(2 * min((column >= observed).mean(),
+                                             (column <= observed).mean()), 1.0)), 4),
+                "is_sparse": bool(len(present) < sparse_months),
+            })
+    return pd.DataFrame.from_records(records)[columns]
+
+
 def run_monthly_levels_research(symbol: str = None, path: str = DATA_PATH,
                                 output_dir: Path = None) -> pd.DataFrame:
     """
@@ -2344,8 +2522,13 @@ def run_monthly_levels_research(symbol: str = None, path: str = DATA_PATH,
     _write_csv(by_index, "monthly_level_forward_touch_by_session_index", output_dir=out_dir)
     _write_csv(by_decile, "monthly_level_forward_touch_by_decile", output_dir=out_dir)
 
+    touch_null = monthly_level_touch_null(df_1m)
+    _write_csv(touch_null, "monthly_level_touch_null", output_dir=out_dir)
+
     print("\n[Research] Monthly level touch distribution:")
     print(distribution.to_string(index=False))
+    print("\n[Research] Monthly level touch vs the null ladder:")
+    print(touch_null.to_string(index=False))
     return rows
 
 
