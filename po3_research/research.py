@@ -2353,6 +2353,62 @@ def month_state_outcomes(rows: pd.DataFrame, targets: list, group_cols: list = N
     return out.sort_values(sort_cols).reset_index(drop=True)
 
 
+def run_month_context_research(symbol: str = None, path: str = DATA_PATH,
+                               output_dir: Path = None,
+                               resample_to: str = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Month-state as a conditioner on the existing intraday and weekly rows.
+
+    Adds columns to the existing row builders and writes new summary files. It does
+    not alter any existing figure.
+    """
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("month_context", symbol)
+    print(f"[Research] {symbol} month context ...")
+    df_1m = load_1m_source(path)
+    df = load_and_resample(path, resample_to or RESAMPLE_TO)
+    monthly = build_monthly(df)
+    weekly = build_weekly(df)
+    session_state = build_month_state_by_session(df, monthly)
+
+    key_level = attach_monthly_targets(
+        attach_month_state(build_intraday_key_level_rows(df_1m), session_state), monthly)
+    key_level["Row_Source"] = "intraday_levels"
+    key_level["Window_Name"] = "Day"
+
+    relative = attach_monthly_targets(
+        attach_month_state(
+            drop_lookahead_level_windows(build_relative_level_path_rows(df_1m)), session_state),
+        monthly)
+    relative["Row_Source"] = "relative_path"
+
+    group_cols = ["Row_Source", "Split", "Level_Name", "Window_Name"]
+    intraday = pd.concat([
+        month_state_outcomes(key_level, ["Day_Bullish", "Day_Close_Above_Level"], group_cols=group_cols),
+        month_state_outcomes(relative, ["Day_Bullish", "Next_Session_Bullish"], group_cols=group_cols),
+    ], ignore_index=True)
+    _write_csv(intraday, "intraday_outcomes_by_month_state", output_dir=out_dir)
+
+    week_state = build_week_month_state(session_state)
+    weekly_rows = weekly.copy()
+    weekly_rows.index.name = "Week_Start"
+    weekly_rows = weekly_rows.reset_index()
+    weekly_rows["Split"] = np.where(weekly_rows["Week_Start"] <= TRAIN_END, "Train", "OOS")
+    weekly_rows["Week_Bullish"] = weekly_rows["Bull_Bear"].eq("Bullish")
+    weekly_rows["Weekly_High_Friday"] = weekly_rows["High_Weekday"].eq("Friday")
+    weekly_rows["Weekly_Low_Monday"] = weekly_rows["Low_Weekday"].eq("Monday")
+    weekly_rows = attach_monthly_targets(
+        attach_week_month_state(weekly_rows, week_state), monthly)
+    weekly_summary = month_state_outcomes(
+        weekly_rows,
+        ["Week_Bullish", "Weekly_High_Friday", "Weekly_Low_Monday"],
+        group_cols=["Split"],
+        extra_conditioners=["Straddles_Month_Boundary"],
+    )
+    _write_csv(weekly_summary, "weekly_outcomes_by_month_state", output_dir=out_dir)
+    return intraday, weekly_summary
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
