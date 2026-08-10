@@ -114,17 +114,29 @@ def session_of_index(index: pd.DatetimeIndex) -> np.ndarray:
     return out
 
 
+def _shift_days_local(value, days):
+    """
+    Add whole calendar days in local time, then snap to local midnight.
+
+    Timedelta arithmetic on a tz-aware timestamp adds absolute hours, so on the
+    two DST-transition Sundays "midnight + 1 day" lands at 23:00 or 01:00. That
+    used to split the following Monday into two trading days. Doing the date
+    arithmetic naive and re-localizing keeps every session date at midnight.
+    """
+    tz = getattr(value, "tz", None) or getattr(value, "tzinfo", None)
+    naive = value.tz_localize(None) if tz is not None else value
+    shifted = naive.normalize() + pd.to_timedelta(days, unit="D")
+    return shifted.tz_localize(tz) if tz is not None else shifted
+
+
 def intraday_trading_day(ts: pd.Timestamp) -> pd.Timestamp:
     """Map ET timestamp to futures session date; 18:00+ belongs to next RTH date."""
-    base = ts.normalize()
-    if (ts.hour, ts.minute) >= (18, 0):
-        return base + pd.Timedelta(days=1)
-    return base
+    return _shift_days_local(ts, 1 if (ts.hour, ts.minute) >= (18, 0) else 0)
 
 
 def intraday_trading_day_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     """Vectorized session-date mapping for an ET DatetimeIndex."""
-    return index.normalize() + pd.to_timedelta((index.hour >= 18).astype(int), unit="D")
+    return _shift_days_local(index, (index.hour >= 18).astype(int))
 
 
 def trading_weekday(ts: pd.Timestamp) -> str:
@@ -158,13 +170,13 @@ def trading_week_monday(ts: pd.Timestamp) -> pd.Timestamp:
     the weekly high/low day.
     """
     day = intraday_trading_day(ts)
-    return day - pd.Timedelta(days=int(day.dayofweek))
+    return _shift_days_local(day, -int(day.dayofweek))
 
 
 def trading_week_monday_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     """Vectorized `trading_week_monday` for an ET DatetimeIndex."""
     days = intraday_trading_day_index(index)
-    return days - pd.to_timedelta(days.dayofweek, unit="D")
+    return _shift_days_local(days, -days.dayofweek)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1258,9 +1270,8 @@ def composite_level_context(window_close: float, level_values: dict) -> dict:
 
 def _window_timestamp(trading_day: pd.Timestamp, hm: tuple[int, int]) -> pd.Timestamp:
     hour, minute = hm
-    if hour >= 18:
-        return (trading_day - pd.Timedelta(days=1)).replace(hour=hour, minute=minute)
-    return trading_day.replace(hour=hour, minute=minute)
+    base = _shift_days_local(trading_day, -1) if hour >= 18 else trading_day
+    return base.replace(hour=hour, minute=minute)
 
 
 def build_relative_level_path_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
