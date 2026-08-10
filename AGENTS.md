@@ -34,8 +34,9 @@ python3 -m po3_research --symbol NQ --data data/nq_1m.parquet --modules relative
 ```
 
 Modules: `weekly_charts`, `weekly_events`, `weekly_open_revisit`, `intraday_levels`,
-`path_dependency`, `relative_path`. Each writes to a symbol-scoped directory, so ES
-and NQ runs never overwrite each other.
+`path_dependency`, `relative_path`, `monthly_extremes`, `monthly_levels`,
+`month_context`. Each writes to a symbol-scoped directory, so ES and NQ runs never
+overwrite each other.
 
 ## Data
 
@@ -73,6 +74,25 @@ a 5.6M-bar sample.
 ### Futures trading week
 
 Use `trading_week_monday(ts)`. Do not use `pd.Grouper(freq="W-MON")`; it creates Tuesday→Monday buckets and misclassifies Monday extremes.
+
+### Session month
+
+Use `trading_month_start(ts)` / `trading_month_start_index(index)`. A session month
+holds every bar whose session date falls in that calendar month, so August 2025
+opens at the 18:00 ET print on 31 July. Both helpers route through
+`_shift_days_local`, so the anchor stays at local midnight across DST. The
+`monthly_extremes`, `monthly_levels`, and `month_context` modules all group on it.
+
+The first and last months of the sample are partial and are excluded from every rate
+(`Is_Partial` / `complete_months`).
+
+`N_Sessions` is exchange-calendar data, not price data. It is published in advance,
+so normalized session position is a legitimate conditioner even though it divides by
+the month's eventual length.
+
+Monthly outputs carry **no train/OOS split**. 194 months against 841 weeks cannot
+support one. Report `n`, a bootstrap CI, and `is_sparse` against `SPARSE_MONTHS`
+instead, and label the results descriptive.
 
 ### Sessions
 
@@ -120,6 +140,19 @@ These have all been fixed once. Do not reintroduce them.
    row-level bootstrap reports a CI several times too narrow.
 7. **Multiple comparisons.** `strongest_excess_distributions` is the top 10 of ~75
    cells with no correction. It is a shortlist, not a result.
+8. **Unknowable month-state conditioners.** A conditioner must be knowable at the
+   time of the row it conditions. Conditioning a daily outcome on the month's
+   eventual direction, high, low or close repeats hazard 2 at monthly scale.
+   `MONTH_STATE_CONDITIONERS` is the allow-list; `is_whole_month_label` and its test
+   are the guard. `Month_Return_So_Far_Pct` runs to the current session's close, so
+   against a same-session target it is contemporaneous — `Month_Return_To_Prior_Close_Pct`
+   is the fully lagged twin.
+9. **Monthly targets on late-month rows.** A monthly label is forward-looking for a
+   session in the first third of the month and contemporaneous for one in the last.
+   Monthly targets are scored on `Third_In_Month == Early` rows only, recorded in
+   `Month_Scope`, and carry `n_months` beside `n` — one monthly label repeats across
+   up to 24 day-rows. This is the session-position generalization of the weekday
+   scope rule in item 2.
 
 ## Key Levels
 

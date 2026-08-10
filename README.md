@@ -138,8 +138,9 @@ python3 -m po3_research --symbol NQ --data data/nq_1m.parquet \
 ```
 
 Modules: `weekly_charts`, `weekly_events`, `weekly_open_revisit`, `intraday_levels`,
-`path_dependency`, `relative_path`. Output is written per symbol, so ES and NQ runs do
-not overwrite each other. `python3 analysis.py` still works and accepts the same flags.
+`path_dependency`, `relative_path`, `monthly_extremes`, `monthly_levels`,
+`month_context`. Output is written per symbol, so ES and NQ runs do not overwrite
+each other. `python3 analysis.py` still works and accepts the same flags.
 
 <details>
 <summary><strong>How TWAP/VWAP predictive power is measured</strong></summary>
@@ -234,6 +235,16 @@ gives each weekday a different amount of exposure:
 Under calendar attribution Monday absorbs both Sunday's overnight session and its own,
 while Friday stops at the 17:00 close — so a uniform null is 24.9% for Monday and 14.6%
 for Friday, not 20% each. Session-date attribution removes that.
+
+## Session Month
+
+A month is a **session month**: it holds every bar whose session date falls in that
+calendar month. August 2025 therefore opens at the 18:00 ET Globex print on 31 July
+and closes at the 17:00 ET print on 29 August. `trading_month_start(ts)` returns the
+calendar anchor, mirroring `trading_week_monday(ts)`.
+
+The first and last months of the sample are truncated and are excluded from every
+rate (`Is_Partial`).
 
 Key opens use New York time.
 
@@ -355,6 +366,57 @@ describe a level that does not exist until after the window closes. Those rows c
 `Level_Defined_By_Window_End = False` and are excluded from the summaries by default
 (`drop_lookahead_level_windows`); the detail CSV keeps them for inspection.
 
+## 8. Monthly Extreme Timing
+
+When in a session month the monthly high and low form. Primary cuts are session
+position — thirds and quintiles of the month's ordered session list — so months
+holding 13 to 24 sessions stay comparable. Week-of-month, weekday, session and
+day-of-month are secondary views.
+
+**Monthly results carry no train/OOS split and are labelled descriptive, not
+validated.** The ES sample holds 194 months against 841 weeks; a 2023-12-31 split
+leaves 31 OOS months, so a five-way conditional cut gives ~6 observations per cell.
+Every figure instead carries `n`, a bootstrap 95% CI, and `is_sparse` against
+`SPARSE_MONTHS = 20`. No "strongest cell" ranking table is produced.
+
+The week-of-month table carries `months_present` and `avg_sessions`. W5 exists in
+only about 41 of 192 months and spans ~2 sessions against W1–W4's ~5, so its share
+is not comparable to theirs — and at n=41 the sparse flag alone would not say so.
+
+## 9. Monthly Levels
+
+`Monthly_Open`, `Prior_Month_High`, `Prior_Month_Low`, `Prior_Month_Close` — one
+price each that stays live for a whole month, so they get their own builder rather
+than an entry in `KEY_LEVEL_TIMES`.
+
+Touch counting starts at 09:30 ET on the month's first RTH session
+(`MONTHLY_LEVEL_COUNT_FROM`). Without that guard the monthly-open retap rate is
+~100% and carries no information: the 18:00 print is set in thin hours and is
+retested within minutes. This is the monthly analogue of the Monday 09:30 rule on
+weekly-open revisits.
+
+Forward-touch probability — level touched from session `k` through month end — is
+reported on two axes: raw session index, where `n` falls away past ~19 sessions, and
+normalized decile, where every month contributes to every bucket.
+
+## 10. Month-State Context
+
+Month-state attaches to the existing intraday and weekly rows as a conditioner:
+month of year, session position in month, third, quintile, week of month,
+month-to-date return, state versus the monthly open, and prior-month direction.
+Weekly rows take their state from the Monday's session and carry a
+`Straddles_Month_Boundary` flag; roughly a third of trading weeks span two months.
+
+Two rules govern it:
+
+- **Knowability.** A conditioner must be knowable at the time of the row it
+  conditions. Prior-month and month-to-date features qualify; the month's eventual
+  direction, high, low or close do not. Enforced by the `MONTH_STATE_CONDITIONERS`
+  allow-list and a test asserting no whole-month label is in it.
+- **Scope.** Monthly targets are scored on `Third_In_Month == Early` rows only,
+  recorded in `Month_Scope`, with `n_months` beside `n`. A late-month row
+  "predicting" its own month's close is describing it.
+
 </details>
 
 <details>
@@ -373,6 +435,9 @@ output/
     ├── intraday_levels_es/
     ├── path_dependency_es/
     ├── relative_path_es/
+    ├── monthly_extremes_es/
+    ├── monthly_levels_es/
+    ├── month_context_es/
     └── ..._nq/
 ```
 
