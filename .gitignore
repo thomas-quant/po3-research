@@ -28,9 +28,8 @@ Thumbs.db
 *.sublime-project
 *.sublime-workspace
 
-# Generated Output
+# Local data (never committed)
 data/
-*.csv
 
 # OS
 .DS_Store
@@ -46,6 +45,7 @@ data/
 # Git worktrees
 .worktrees/
 CLAUDE.md
+# Generated output. Only the tracked README artifacts under output/examples/
+# are committed; every other chart/table a research run produces stays local.
 output/*
-!output/**/
-!output/**/*.png
+!output/examples/

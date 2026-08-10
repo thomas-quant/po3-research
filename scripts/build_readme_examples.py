@@ -24,8 +24,10 @@ import pandas as pd
 from po3_research.research import (
     DAYS,
     SESSION_ORDER,
+    TRAIN_END,
     build_relative_level_path_rows,
     build_weekly,
+    drop_lookahead_level_windows,
     intraday_level_forward_touch_distribution,
     load_1m_source,
     load_and_resample,
@@ -62,8 +64,10 @@ TWAP_VWAP_COLUMNS = [
     "End_State_Adjusted_Delta_Ppt",
     "Abs_Best_Delta_Ppt",
     "Best_Side",
+    "Weekday_Scope",
     "n_above",
     "n_below",
+    "n_weeks",
 ]
 
 LEVEL_WINDOW_PAIRS = [
@@ -81,6 +85,25 @@ TWAP_VWAP_TARGETS = [
     ("Weekly high Friday", "Weekly_High_Friday"),
     ("Weekly low Monday", "Weekly_Low_Monday"),
 ]
+
+WEEKLY_TARGET_COLUMNS = {"Week_Bullish", "Weekly_High_Friday", "Weekly_Low_Monday"}
+EARLY_WEEK_DAYS = ["Monday", "Tuesday"]
+
+
+def _is_same_level_close_state(rows: pd.DataFrame, target_col: str) -> bool:
+    """
+    True when the target is just "did the day close above this level?".
+
+    Checking the target name is not enough: for Globex_Open the level value IS the
+    day open, so `Day_Bullish` and `Day_Close_Above_Level` are the same column by
+    construction. Comparing the values catches that case for any level.
+    """
+    if target_col not in rows or "Day_Close_Above_Level" not in rows:
+        return False
+    target = rows[target_col]
+    if target.isna().any():
+        return False
+    return bool(target.astype(bool).equals(rows["Day_Close_Above_Level"].astype(bool)))
 
 
 @dataclass(frozen=True)
@@ -254,7 +277,7 @@ def _plot_forward_touch(df_1m: pd.DataFrame, symbol: str, output: Path) -> None:
 
 
 def _plot_relative_path(df_1m: pd.DataFrame, symbol: str, output: Path) -> None:
-    rows = build_relative_level_path_rows(df_1m)
+    rows = drop_lookahead_level_windows(build_relative_level_path_rows(df_1m))
     focus = rows[(rows["Split"].eq("Train")) & (rows["Window_Name"].eq("Midnight_to_0930"))].copy()
     summary = focus.groupby("Level_Name", as_index=False)[["Pct_Bars_Above_Level", "Pct_Bars_Below_Level", "Pct_Bars_Touching_Level"]].mean()
     summary = summary.set_index("Level_Name").reindex(["Globex_Open", "NY_Midnight_Open", "NY_0930_Open", "NY_1300_Open"]).dropna(how="all")
@@ -272,7 +295,7 @@ def _plot_relative_path(df_1m: pd.DataFrame, symbol: str, output: Path) -> None:
     ax.set_ylabel("Average % of bars")
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     ax.set_title(f"{symbol.upper()} relative path context before 09:30", loc="left", fontsize=15, fontweight="bold", color=TEXT)
-    ax.text(0, 1.02, "Train split, Midnight→09:30 window. Bars are classified relative to each defined key open.", transform=ax.transAxes, color=MUTED, fontsize=10)
+    ax.text(0, 1.02, "Train split, Midnight→09:30 window. Only levels already defined by 09:30 are shown.", transform=ax.transAxes, color=MUTED, fontsize=10)
     ax.legend(frameon=False, ncol=3, loc="upper right")
     fig.tight_layout()
     _finish(fig, output)
@@ -293,7 +316,7 @@ def _top_category(series: pd.Series) -> tuple[str, float]:
 def _build_findings_summary(symbol: str, weekly: pd.DataFrame, df_1m: pd.DataFrame, twap_summary: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     symbol = symbol.upper()
-    for split, group in [("All", weekly), ("Train", weekly[weekly.index <= pd.Timestamp("2023-12-31", tz="America/New_York")]), ("OOS", weekly[weekly.index > pd.Timestamp("2023-12-31", tz="America/New_York")])]:
+    for split, group in [("All", weekly), ("Train", weekly[weekly.index <= TRAIN_END]), ("OOS", weekly[weekly.index > TRAIN_END])]:
         if group.empty:
             continue
         low_day, low_pct = _top_category(group["Low_Weekday"])
@@ -329,6 +352,18 @@ def _build_findings_summary(symbol: str, weekly: pd.DataFrame, df_1m: pd.DataFra
     return pd.DataFrame(rows, columns=FINDINGS_COLUMNS)
 
 
+def _weekday_scope(target_col: str) -> str:
+    """
+    Which rows may condition a target.
+
+    Weekly labels are only forward-looking early in the week: a Friday row asking
+    "did the weekly high form on Friday?" is describing its own session, not
+    predicting it. Weekly targets are therefore restricted to Monday/Tuesday
+    rows, matching relative_path_to_weekly_outcomes.
+    """
+    return "Mon-Tue" if target_col in WEEKLY_TARGET_COLUMNS else "All"
+
+
 def _build_twap_vwap_summary(symbol: str, rows: pd.DataFrame, weekly: pd.DataFrame) -> pd.DataFrame:
     detail = rows.copy()
     detail["Week_Start"] = pd.to_datetime(detail["Trading_Day"]).map(trading_week_monday)
@@ -337,7 +372,11 @@ def _build_twap_vwap_summary(symbol: str, rows: pd.DataFrame, weekly: pd.DataFra
     detail["Week_Bullish"] = detail["Bull_Bear"].eq("Bullish")
     detail["Weekly_High_Friday"] = detail["High_Weekday"].eq("Friday")
     detail["Weekly_Low_Monday"] = detail["Low_Weekday"].eq("Monday")
-    detail["Next_Session_Positive_Return"] = detail["Next_Session_Return_Pct"] > 0
+    # Keep NaN as NaN: `> 0` would score every window with no following session
+    # (all of 1300_to_Close) as a negative observation instead of no observation.
+    detail["Next_Session_Positive_Return"] = np.where(
+        detail["Next_Session_Return_Pct"].isna(), np.nan, detail["Next_Session_Return_Pct"] > 0
+    )
 
     targets = TWAP_VWAP_TARGETS
     records: list[dict[str, object]] = []
@@ -345,14 +384,27 @@ def _build_twap_vwap_summary(symbol: str, rows: pd.DataFrame, weekly: pd.DataFra
         pair_rows = detail[detail["Level_Name"].eq(level_name) & detail["Window_Name"].eq(window_name)]
         if pair_rows.empty:
             continue
-        for split, split_rows in pair_rows.groupby("Split", dropna=False):
+        for split, all_split_rows in pair_rows.groupby("Split", dropna=False):
             for signal in ["TWAP_Above_Level", "VWAP_Above_Level"]:
-                if signal not in split_rows:
+                if signal not in all_split_rows:
                     continue
-                above_mask = split_rows[signal].astype(bool)
-                below_mask = ~above_mask
                 for target_label, target_col in targets:
+                    scope = _weekday_scope(target_col)
+                    split_rows = all_split_rows[all_split_rows["Weekday"].isin(EARLY_WEEK_DAYS)] if scope == "Mon-Tue" else all_split_rows
+                    # A signal row with no VWAP (zero-volume window) cannot vote.
+                    split_rows = split_rows[split_rows[signal].notna()]
+                    if split_rows.empty:
+                        continue
+                    if _is_same_level_close_state(split_rows, target_col):
+                        continue
                     target = split_rows[target_col]
+                    # A window with nothing after it (1300_to_Close) has no
+                    # next-session outcome at all. Emit nothing rather than a row
+                    # of NaN or a baseline of 0%.
+                    if target.notna().sum() == 0:
+                        continue
+                    above_mask = split_rows[signal].astype(bool)
+                    below_mask = ~above_mask
                     baseline = _pct(target)
                     above = _pct(target[above_mask])
                     below = _pct(target[below_mask])
@@ -382,6 +434,8 @@ def _build_twap_vwap_summary(symbol: str, rows: pd.DataFrame, weekly: pd.DataFra
                         "Window_Name": window_name,
                         "Signal": signal.replace("_Above_Level", ""),
                         "Target": target_label,
+                        "Weekday_Scope": scope,
+                        "n_weeks": int(split_rows["Week_Start"].nunique()),
                         "Baseline_Pct": baseline,
                         "Above_Pct": above,
                         "Below_Pct": below,
@@ -413,7 +467,7 @@ def _plot_twap_vwap_matrix(summary: pd.DataFrame, symbol: str, output: Path) -> 
     vmax = max(5.0, float(pivot.to_numpy().max()) if len(pivot) else 5.0)
     im = ax.imshow(pivot.values, cmap="YlOrRd", aspect="auto", vmin=0, vmax=vmax)
     ax.set_title(f"{symbol.upper()} TWAP/VWAP conditional deltas by level window", loc="left", fontsize=15, fontweight="bold", color=TEXT)
-    ax.text(0, 1.02, f"{split_label} split. Cell = positive incremental ppt after end-close-above-level sanity baseline.", transform=ax.transAxes, color=MUTED, fontsize=10)
+    ax.text(0, 1.02, f"{split_label} split. Cell = positive incremental ppt after end-close-above-level sanity baseline. Weekly targets use Mon/Tue rows only.", transform=ax.transAxes, color=MUTED, fontsize=10)
     ax.set_xticks(range(len(pivot.columns)))
     ax.set_xticklabels(pivot.columns, rotation=25, ha="right")
     ax.set_yticks(range(len(pivot.index)))

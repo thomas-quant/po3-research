@@ -45,6 +45,12 @@ SESSION_ORDER = list(SESSIONS.keys())
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 COLORS = {"Bullish": "#27ae60", "Bearish": "#e74c3c"}
 
+
+def module_output_dir(module: str, symbol: str = None, root: Path = None) -> Path:
+    """Symbol-scoped output directory for a research module."""
+    root = root or EVENT_OUTPUT_DIR
+    return root / f"{module}_{(symbol or SYMBOL).lower()}"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATA LOADING & RESAMPLING
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -99,14 +105,45 @@ def session_of(ts: pd.Timestamp) -> str:
     return "Other"
 
 
+def session_of_index(index: pd.DatetimeIndex) -> np.ndarray:
+    """Vectorized `session_of` for an ET DatetimeIndex."""
+    hours = np.asarray(index.hour)
+    out = np.full(len(hours), "Other", dtype=object)
+    for name, (lo, hi) in SESSIONS.items():
+        out[(hours >= lo) & (hours < hi)] = name
+    return out
+
+
+def intraday_trading_day(ts: pd.Timestamp) -> pd.Timestamp:
+    """Map ET timestamp to futures session date; 18:00+ belongs to next RTH date."""
+    base = ts.normalize()
+    if (ts.hour, ts.minute) >= (18, 0):
+        return base + pd.Timedelta(days=1)
+    return base
+
+
+def intraday_trading_day_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Vectorized session-date mapping for an ET DatetimeIndex."""
+    return index.normalize() + pd.to_timedelta((index.hour >= 18).astype(int), unit="D")
+
+
 def trading_weekday(ts: pd.Timestamp) -> str:
     """
-    Return the trading weekday name.
-    Sunday 18:00+ is the CME open for the new week — treat it as Monday.
+    Return the CME session weekday of `ts`.
+
+    The session date rolls at 18:00 ET, so Sunday 18:00 and Monday 09:30 are both
+    "Monday", while Monday 19:00 is "Tuesday". Each weekday therefore covers one
+    ~23h session (prior 18:00 → 17:00) and the weekday buckets are comparable in
+    width. Calendar-day attribution is NOT interchangeable here: it gives Monday
+    ~28.5h/week (its own evening plus Sunday's) against Friday's ~17h, which
+    inflates Monday as the weekly-low day and deflates Friday.
     """
-    if ts.dayofweek == 6:   # Sunday evening session
-        return "Monday"
-    return ts.day_name()
+    return intraday_trading_day(ts).day_name()
+
+
+def trading_weekday_index(index: pd.DatetimeIndex) -> np.ndarray:
+    """Vectorized `trading_weekday` for an ET DatetimeIndex."""
+    return np.asarray(intraday_trading_day_index(index).day_name())
 
 
 def trading_week_monday(ts: pd.Timestamp) -> pd.Timestamp:
@@ -120,10 +157,14 @@ def trading_week_monday(ts: pd.Timestamp) -> pd.Timestamp:
     always ends up as the last day of the group, artificially inflating it as
     the weekly high/low day.
     """
-    dow = ts.dayofweek      # Mon=0 … Fri=4, Sat=5, Sun=6
-    if dow == 6:            # Sunday evening (all Sunday data is 18:00–23:59)
-        return (ts + pd.Timedelta(days=1)).normalize()
-    return (ts - pd.Timedelta(days=dow)).normalize()
+    day = intraday_trading_day(ts)
+    return day - pd.Timedelta(days=int(day.dayofweek))
+
+
+def trading_week_monday_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Vectorized `trading_week_monday` for an ET DatetimeIndex."""
+    days = intraday_trading_day_index(index)
+    return days - pd.to_timedelta(days.dayofweek, unit="D")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -142,7 +183,7 @@ def build_weekly(df: pd.DataFrame) -> pd.DataFrame:
         High_Hour      : hour (ET) of the high bar
         Prev_Bull_Bear : previous week's direction (for experiments)
     """
-    week_keys = df.index.map(trading_week_monday)
+    week_keys = trading_week_monday_index(df.index)
 
     def summarize(w: pd.DataFrame) -> pd.Series:
         if len(w) < 2:
@@ -206,13 +247,22 @@ def _prior_break_bucket(broke_high: bool, broke_low: bool) -> str:
 
 
 def _range_expansion_buckets(rows: pd.DataFrame) -> pd.Series:
-    """Bucket developing range vs same slot across sample."""
+    """
+    Bucket developing range against the same slot's TRAIN distribution.
+
+    Thresholds come from train rows only and are then applied to OOS, matching
+    every other bucketing helper here. Using the full sample would leak both the
+    OOS distribution and future weeks into a feature that is later reported
+    split by Train/OOS.
+    """
     out = pd.Series("Medium", index=rows.index, dtype=object)
+    is_train = rows["Split"].eq("Train")
     for _, idx in rows.groupby("Slot_Index").groups.items():
         vals = rows.loc[idx, "Developing_Range"]
-        if len(vals) < 3 or vals.nunique(dropna=True) < 3:
+        train_vals = vals[is_train.loc[idx]]
+        if len(train_vals) < 3 or train_vals.nunique(dropna=True) < 3:
             continue
-        q1, q2 = vals.quantile([1 / 3, 2 / 3])
+        q1, q2 = train_vals.quantile([1 / 3, 2 / 3])
         out.loc[idx[vals <= q1]] = "Low"
         out.loc[idx[(vals > q1) & (vals < q2)]] = "Medium"
         out.loc[idx[vals >= q2]] = "High"
@@ -230,7 +280,7 @@ def build_event_rows(df: pd.DataFrame) -> pd.DataFrame:
     prev_week_high = np.nan
     prev_week_low = np.nan
 
-    week_keys = df.index.map(trading_week_monday)
+    week_keys = trading_week_monday_index(df.index)
     for week_start, w in df.groupby(week_keys, sort=True):
         if len(w) < 2:
             continue
@@ -248,6 +298,8 @@ def build_event_rows(df: pd.DataFrame) -> pd.DataFrame:
         if not pd.isna(prev_week_low):
             broke_prior_low_series = low_so_far <= prev_week_low
 
+        weekdays = trading_weekday_index(w.index)
+        sessions = session_of_index(w.index)
         for slot_index, (ts, row) in enumerate(w.iterrows()):
             close = float(row["Close"])
             whsf = float(high_so_far.loc[ts])
@@ -259,8 +311,8 @@ def build_event_rows(df: pd.DataFrame) -> pd.DataFrame:
                 "Week_Start": week_start,
                 "Timestamp": ts,
                 "Split": "Train" if week_start <= TRAIN_END else "OOS",
-                "Weekday": trading_weekday(ts),
-                "Session": session_of(ts),
+                "Weekday": weekdays[slot_index],
+                "Session": sessions[slot_index],
                 "Hour": ts.hour,
                 "Slot_Index": slot_index,
                 "Final_High_Timestamp": final_high_ts,
@@ -374,42 +426,50 @@ def survival_curve(rows: pd.DataFrame, event: str) -> pd.DataFrame:
     return out.drop(columns=["formed"])
 
 
-def _write_csv(df: pd.DataFrame, name: str, output_dir: Path = EVENT_OUTPUT_DIR):
+def _write_csv(df: pd.DataFrame, name: str, output_dir: Path = None):
+    output_dir = Path(output_dir) if output_dir is not None else EVENT_OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{name}.csv"
     df.to_csv(path, index=False)
     print(f"  → {path}")
 
 
-def _barh_chart(df: pd.DataFrame, label_cols: list, value_col: str, title: str, filename: str):
+BARH_MAX_ROWS = 20
+
+
+def _barh_chart(df: pd.DataFrame, label_cols: list, value_col: str, title: str, filename: str, output_dir: Path = None):
     if df.empty:
         return
-    plot = df.copy().head(20)
+    plot = df.copy().head(BARH_MAX_ROWS)
+    dropped = len(df) - len(plot)
     labels = plot[label_cols].astype(str).agg(" | ".join, axis=1)
     fig, ax = plt.subplots(figsize=(10, max(4, len(plot) * 0.35)))
     colors = ["#b0b0b0" if bool(v) else "#3498db" for v in plot.get("is_sparse", pd.Series(False, index=plot.index))]
     ax.barh(labels, plot[value_col], color=colors, alpha=0.85)
     ax.invert_yaxis()
     ax.set_xlabel("Probability (%)")
-    ax.set_title(title)
+    # Say so when rows are cut, otherwise a truncated chart reads as the whole table.
+    ax.set_title(f"{title} — top {len(plot)} of {len(df)} rows" if dropped else title)
     ax.xaxis.set_major_formatter(mticker.PercentFormatter())
     ax.grid(axis="x", alpha=0.25, linestyle="--")
     fig.tight_layout()
-    _save(fig, f"research_events/{filename}")
+    _save(fig, filename, output_dir=output_dir)
 
 
-def run_event_distribution_research(df: pd.DataFrame, weekly: pd.DataFrame = None) -> pd.DataFrame:
+def run_event_distribution_research(df: pd.DataFrame, weekly: pd.DataFrame = None, symbol: str = None, output_dir: Path = None) -> pd.DataFrame:
     """Generate research CSV/PNG outputs for online weekly extreme timing."""
-    print("[Research] Building online event rows ...")
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("weekly_events", symbol)
+    print(f"[Research] {symbol} building online event rows ...")
     rows = build_event_rows(df)
-    _write_csv(rows, "event_rows")
+    _write_csv(rows, "event_rows", output_dir=out_dir)
 
     print("[Research] Event timing distributions ...")
     for event in ["high", "low"]:
         for cols, name in [(["Weekday"], "weekday"), (["Session"], "session"), (["Weekday", "Session"], "weekday_session"), (["Hour"], "hour")]:
             timing = event_timing_distribution(rows, event, cols)
-            _write_csv(timing, f"{event}_timing_by_{name}")
-            _barh_chart(timing, cols, "pct", f"{SYMBOL} {event.upper()} timing by {name}", f"{event}_timing_by_{name}")
+            _write_csv(timing, f"{event}_timing_by_{name}", output_dir=out_dir)
+            _barh_chart(timing, cols, "pct", f"{symbol} {event.upper()} timing by {name}", f"{event}_timing_by_{name}", output_dir=out_dir)
 
     print("[Research] Conditional path-state distributions ...")
     condition_sets = [
@@ -423,8 +483,8 @@ def run_event_distribution_research(df: pd.DataFrame, weekly: pd.DataFrame = Non
         for cond in condition_sets:
             dist = conditional_event_distribution(rows, event_col, cond)
             stem = f"{event_name}_conditional_by_{'_'.join(cond).lower()}"
-            _write_csv(dist, stem)
-            _barh_chart(dist[dist["Split"].eq("Train")].sort_values("probability", ascending=False), cond, "probability", f"{SYMBOL} {event_name.upper()} event probability by {' + '.join(cond)} (Train)", stem)
+            _write_csv(dist, stem, output_dir=out_dir)
+            _barh_chart(dist[dist["Split"].eq("Train")].sort_values("probability", ascending=False), cond, "probability", f"{symbol} {event_name.upper()} event probability by {' + '.join(cond)} (Train)", stem, output_dir=out_dir)
 
     print("[Research] Remaining-time distributions ...")
     for event in ["high", "low"]:
@@ -432,24 +492,24 @@ def run_event_distribution_research(df: pd.DataFrame, weekly: pd.DataFrame = Non
         for checkpoint_cols, name in [(["Weekday"], "weekday"), (["Weekday", "Session"], "weekday_session"), (["Weekday", "Session", "Close_Location_Bucket"], "weekday_session_close_location")]:
             remaining = remaining_event_distribution(rows, event, checkpoint_cols, target_cols)
             stem = f"{event}_remaining_by_{name}"
-            _write_csv(remaining, stem)
-            _barh_chart(remaining, checkpoint_cols + target_cols, "pct", f"{SYMBOL} remaining {event.upper()} target by {' + '.join(checkpoint_cols)}", stem)
+            _write_csv(remaining, stem, output_dir=out_dir)
+            _barh_chart(remaining, checkpoint_cols + target_cols, "pct", f"{symbol} remaining {event.upper()} target by {' + '.join(checkpoint_cols)}", stem, output_dir=out_dir)
 
     print("[Research] Survival curves ...")
     for event in ["high", "low"]:
         surv = survival_curve(rows, event)
-        _write_csv(surv, f"{event}_survival_by_slot")
+        _write_csv(surv, f"{event}_survival_by_slot", output_dir=out_dir)
         fig, ax = plt.subplots(figsize=(10, 5))
         for split, sub in surv.groupby("Split"):
             ax.plot(sub["Slot_Index"], sub[f"{event}_not_formed_pct"], marker="o", markersize=2, label=split)
-        ax.set_title(f"{SYMBOL} {event.upper()} not formed yet by hourly slot")
+        ax.set_title(f"{symbol} {event.upper()} not formed yet by hourly slot")
         ax.set_xlabel("Hourly slot in trading week")
         ax.set_ylabel("Not formed yet (%)")
         ax.yaxis.set_major_formatter(mticker.PercentFormatter())
         ax.grid(alpha=0.25, linestyle="--")
         ax.legend()
         fig.tight_layout()
-        _save(fig, f"research_events/{event}_survival_by_slot")
+        _save(fig, f"{event}_survival_by_slot", output_dir=out_dir)
 
     strongest = []
     for event_col, event_name in [("Is_Final_High_Event", "HIGH"), ("Is_Final_Low_Event", "LOW")]:
@@ -461,7 +521,7 @@ def run_event_distribution_research(df: pd.DataFrame, weekly: pd.DataFrame = Non
         strongest.append(train.sort_values("excess_vs_baseline", ascending=False).head(10))
     if strongest:
         strongest_df = pd.concat(strongest, ignore_index=True)
-        _write_csv(strongest_df, "strongest_excess_distributions")
+        _write_csv(strongest_df, "strongest_excess_distributions", output_dir=out_dir)
         print("\n[Research] Strongest non-sparse excess event probabilities (Train):")
         cols = ["Event", "Weekday", "Session", "Close_Location_Bucket", "n", "probability", "ci_low", "ci_high", "excess_vs_baseline"]
         print(strongest_df[cols].to_string(index=False))
@@ -480,16 +540,29 @@ def load_1m_source(path: str) -> pd.DataFrame:
 
 
 def _is_weekly_open_revisit_eligible(ts: pd.Timestamp) -> bool:
-    """Monday counts only from 09:30 ET; Tue-Fri count all bars; Sunday evening excluded."""
+    """
+    Revisit counting starts at Monday 09:30 ET.
+
+    The Sunday-evening reopen and the Monday overnight session are excluded so a
+    revisit is not scored against the thin hours that set the weekly open itself.
+    Everything from Monday 09:30 through the Friday close counts.
+    """
     if ts.dayofweek == 0:
         return (ts.hour, ts.minute) >= (9, 30)
     return 1 <= ts.dayofweek <= 4
 
 
+def _weekly_open_revisit_eligible_index(index: pd.DatetimeIndex) -> np.ndarray:
+    """Vectorized `_is_weekly_open_revisit_eligible`."""
+    dow = np.asarray(index.dayofweek)
+    minutes = np.asarray(index.hour) * 60 + np.asarray(index.minute)
+    return np.where(dow == 0, minutes >= 9 * 60 + 30, (dow >= 1) & (dow <= 4))
+
+
 def build_weekly_open_revisit_rows(df_1m: pd.DataFrame, weekly: pd.DataFrame = None) -> pd.DataFrame:
     """One row per week summarizing weekly-open revisits/crosses from 1m bars."""
     records = []
-    week_keys = df_1m.index.map(trading_week_monday)
+    week_keys = trading_week_monday_index(df_1m.index)
     weekly_lookup = weekly if weekly is not None else build_weekly(df_1m.resample("1h", label="left", closed="left").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna(subset=["Open"]))
 
     for week_start, w in df_1m.groupby(week_keys, sort=True):
@@ -497,7 +570,7 @@ def build_weekly_open_revisit_rows(df_1m: pd.DataFrame, weekly: pd.DataFrame = N
             continue
         w = w.sort_index().copy()
         weekly_open = float(w["Open"].iloc[0])
-        eligible = w.index.map(_is_weekly_open_revisit_eligible)
+        eligible = _weekly_open_revisit_eligible_index(w.index)
         crosses = (w["Low"] <= weekly_open) & (w["High"] >= weekly_open) & eligible
         cross_rows = w[crosses]
         rec = {
@@ -507,8 +580,9 @@ def build_weekly_open_revisit_rows(df_1m: pd.DataFrame, weekly: pd.DataFrame = N
             "Revisited_Weekly_Open": bool(crosses.any()),
             "Total_Cross_Bars": int(crosses.sum()),
         }
+        weekdays = trading_weekday_index(w.index)
         for day in DAYS:
-            day_mask = pd.Series([trading_weekday(ts) == day for ts in w.index], index=w.index)
+            day_mask = pd.Series(weekdays == day, index=w.index)
             rec[f"{day}_Revisited"] = bool((crosses & day_mask).any())
             rec[f"{day}_Cross_Bars"] = int((crosses & day_mask).sum())
 
@@ -605,28 +679,32 @@ def weekly_open_revisit_outcomes(rows: pd.DataFrame) -> pd.DataFrame:
             "close_above_weekly_open_pct": round((group["Close_Above_Weekly_Open"].mean() * 100), 4),
             "high_friday_pct": round((group["High_Weekday"].eq("Friday").mean() * 100), 4) if "High_Weekday" in group else np.nan,
             "low_friday_pct": round((group["Low_Weekday"].eq("Friday").mean() * 100), 4) if "Low_Weekday" in group else np.nan,
+            "high_monday_pct": round((group["High_Weekday"].eq("Monday").mean() * 100), 4) if "High_Weekday" in group else np.nan,
+            "low_monday_pct": round((group["Low_Weekday"].eq("Monday").mean() * 100), 4) if "Low_Weekday" in group else np.nan,
         })
     return pd.DataFrame(records)
 
 
-def run_weekly_open_revisit_research(path: str = DATA_PATH, weekly: pd.DataFrame = None) -> pd.DataFrame:
+def run_weekly_open_revisit_research(path: str = DATA_PATH, weekly: pd.DataFrame = None, symbol: str = None, output_dir: Path = None) -> pd.DataFrame:
     """Generate weekly-open revisit research from source 1m data."""
-    print("[Research] Weekly-open revisits from 1m source ...")
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("weekly_open_revisit", symbol)
+    print(f"[Research] {symbol} weekly-open revisits from 1m source ...")
     df_1m = load_1m_source(path)
     rows = build_weekly_open_revisit_rows(df_1m, weekly)
-    _write_csv(rows, "weekly_open_revisit_rows")
+    _write_csv(rows, "weekly_open_revisit_rows", output_dir=out_dir)
 
     day_dist = weekly_open_revisit_day_distribution(rows)
-    _write_csv(day_dist, "weekly_open_revisit_by_day")
-    _barh_chart(day_dist[day_dist["Split"].eq("Train")].sort_values("revisit_pct", ascending=False), ["Weekday"], "revisit_pct", f"{SYMBOL} weekly open revisit by day (Train)", "weekly_open_revisit_by_day")
+    _write_csv(day_dist, "weekly_open_revisit_by_day", output_dir=out_dir)
+    _barh_chart(day_dist[day_dist["Split"].eq("Train")].sort_values("revisit_pct", ascending=False), ["Weekday"], "revisit_pct", f"{symbol} weekly open revisit by day (Train)", "weekly_open_revisit_by_day", output_dir=out_dir)
 
     first_dist = rows[rows["Revisited_Weekly_Open"]].groupby(["Split", "First_Revisit_Timing_Bucket"], dropna=False).size().reset_index(name="n")
     first_dist["pct"] = first_dist.groupby("Split")["n"].transform(lambda x: (x / x.sum() * 100).round(4))
-    _write_csv(first_dist, "weekly_open_first_revisit_timing_buckets")
-    _barh_chart(first_dist[first_dist["Split"].eq("Train")].sort_values("pct", ascending=False), ["First_Revisit_Timing_Bucket"], "pct", f"{SYMBOL} first weekly-open revisit timing buckets (Train)", "weekly_open_first_revisit_timing_buckets")
+    _write_csv(first_dist, "weekly_open_first_revisit_timing_buckets", output_dir=out_dir)
+    _barh_chart(first_dist[first_dist["Split"].eq("Train")].sort_values("pct", ascending=False), ["First_Revisit_Timing_Bucket"], "pct", f"{symbol} first weekly-open revisit timing buckets (Train)", "weekly_open_first_revisit_timing_buckets", output_dir=out_dir)
 
     outcomes = weekly_open_revisit_outcomes(rows)
-    _write_csv(outcomes, "weekly_open_revisit_outcomes_by_timing_bucket")
+    _write_csv(outcomes, "weekly_open_revisit_outcomes_by_timing_bucket", output_dir=out_dir)
     print("\n[Research] Weekly-open revisit outcomes by timing bucket:")
     print(outcomes.to_string(index=False))
     return rows
@@ -642,36 +720,44 @@ KEY_LEVEL_TIMES = {
     "NY_0930_Open": (9, 30),
     "NY_1300_Open": (13, 0),
 }
-INTRADAY_LEVEL_OUTPUT_DIR = EVENT_OUTPUT_DIR / "intraday_levels"
 
 
-def intraday_trading_day(ts: pd.Timestamp) -> pd.Timestamp:
-    """Map ET timestamp to futures trading day; 18:00+ belongs to next RTH date."""
-    base = ts.normalize()
-    if (ts.hour, ts.minute) >= (18, 0):
-        return base + pd.Timedelta(days=1)
-    return base
+def _next_session_bounds(sessions: np.ndarray, start_pos: int) -> tuple[int, int] | None:
+    """
+    Positions [first, last] of the next session block after `start_pos`.
 
-
-def intraday_trading_day_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    """Vectorized trading-day mapping for an ET DatetimeIndex."""
-    base = index.normalize()
-    roll = (index.hour > 18) | ((index.hour == 18) & (index.minute >= 0))
-    return base + pd.to_timedelta(roll.astype(int), unit="D")
+    The next session is the first *contiguous* run whose label differs from the
+    label at `start_pos`. Sessions are not unique within a futures day — "Other"
+    covers both 16:00–19:00 and the 18:00 open — so the block must be bounded by
+    the first label change after it, not by "last bar with a different label"
+    (which would silently return the day's final bar).
+    """
+    current = sessions[start_pos]
+    n = len(sessions)
+    first = start_pos
+    while first < n and sessions[first] == current:
+        first += 1
+    if first >= n:
+        return None
+    nxt = sessions[first]
+    last = first
+    while last + 1 < n and sessions[last + 1] == nxt:
+        last += 1
+    return first, last
 
 
 def _next_session_return(day: pd.DataFrame, first_ts: pd.Timestamp) -> float:
-    """Return from first revisit close to close of next different session in same trading day."""
-    after = day.loc[day.index >= first_ts].copy()
-    if after.empty:
+    """Return from the revisit close to the close of the next session in the same trading day."""
+    positions = day.index.searchsorted(first_ts, side="left")
+    start_pos = int(positions)
+    if start_pos >= len(day):
         return np.nan
-    start_close = float(after.iloc[0]["Close"])
-    start_session = session_of(first_ts)
-    after["_Session"] = [session_of(ts) for ts in after.index]
-    next_session = after[after["_Session"] != start_session]
-    if next_session.empty or start_close == 0:
+    closes = day["Close"].to_numpy()
+    start_close = float(closes[start_pos])
+    bounds = _next_session_bounds(session_of_index(day.index), start_pos)
+    if bounds is None or start_close == 0:
         return np.nan
-    return float((next_session.iloc[-1]["Close"] / start_close - 1) * 100)
+    return float((closes[bounds[1]] / start_close - 1) * 100)
 
 
 def build_intraday_key_level_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
@@ -718,10 +804,11 @@ def build_intraday_key_level_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
                 "Day_Low_Session": session_of(day_low_ts),
             }
 
+            touch_sessions = session_of_index(touches.index)
             for session in SESSION_ORDER:
-                session_touches = [ts for ts in touches.index if session_of(ts) == session]
-                rec[f"{session}_Touch_Bars"] = len(session_touches)
-                rec[f"{session}_Revisited"] = len(session_touches) > 0
+                n_touches = int((touch_sessions == session).sum())
+                rec[f"{session}_Touch_Bars"] = n_touches
+                rec[f"{session}_Revisited"] = n_touches > 0
 
             if not touches.empty:
                 first_close = float(day.loc[first_ts, "Close"])
@@ -828,6 +915,11 @@ def _bucket_label(ts: pd.Timestamp) -> str:
     return f"{ts.hour:02d}:{ts.minute:02d}"
 
 
+def _bucket_session_minute(ts: pd.Timestamp) -> int:
+    """Minutes since the 18:00 ET session open, so buckets sort chronologically."""
+    return (ts.hour * 60 + ts.minute - 18 * 60) % (24 * 60)
+
+
 def intraday_level_forward_touch_distribution(df_1m: pd.DataFrame, bucket_freq: str = "15min") -> pd.DataFrame:
     """
     For each trading day × level × later time bucket, estimate probability that
@@ -868,36 +960,41 @@ def intraday_level_forward_touch_distribution(df_1m: pd.DataFrame, bucket_freq: 
             positions = day.index.searchsorted(bucket_starts, side="left")
             valid = positions < len(day)
             for bucket_start, pos in zip(bucket_starts[valid], positions[valid]):
-                key = (split, level_name, bucket_freq, _bucket_label(bucket_start))
+                key = (split, level_name, bucket_freq, _bucket_label(bucket_start), _bucket_session_minute(bucket_start))
                 cur = agg.setdefault(key, [0, 0])
                 cur[0] += 1
                 cur[1] += int(bool(future_touch[pos]))
 
+    columns = ["Split", "Level_Name", "Bucket_Freq", "Bucket_Time", "Bucket_Session_Minute", "n", "touch_days", "touch_pct"]
     records = []
-    for (split, level_name, freq, bucket_time), (n, touch_days) in agg.items():
+    for (split, level_name, freq, bucket_time, session_minute), (n, touch_days) in agg.items():
         records.append({
             "Split": split,
             "Level_Name": level_name,
             "Bucket_Freq": freq,
             "Bucket_Time": bucket_time,
+            "Bucket_Session_Minute": session_minute,
             "n": n,
             "touch_days": touch_days,
             "touch_pct": round(touch_days / n * 100, 4) if n else np.nan,
         })
     if not records:
-        return pd.DataFrame(columns=["Split", "Level_Name", "Bucket_Freq", "Bucket_Time", "n", "touch_days", "touch_pct"])
-    return pd.DataFrame.from_records(records).sort_values(["Split", "Level_Name", "Bucket_Time"]).reset_index(drop=True)
+        return pd.DataFrame(columns=columns)
+    # Sort by minutes-since-18:00, not by the "HH:MM" string: a futures day starts
+    # at 18:00, so lexicographic order draws the curve starting mid-session.
+    return pd.DataFrame.from_records(records).sort_values(["Split", "Level_Name", "Bucket_Session_Minute"]).reset_index(drop=True)
 
-def _forward_touch_chart(df: pd.DataFrame, freq_label: str, filename: str):
+def _forward_touch_chart(df: pd.DataFrame, freq_label: str, filename: str, symbol: str = None, output_dir: Path = None):
     train = df[df["Split"].eq("Train")].copy()
     if train.empty:
         return
+    symbol = symbol or SYMBOL
     fig, axes = plt.subplots(len(KEY_LEVEL_TIMES), 1, figsize=(14, 12), sharex=True, sharey=True)
     if len(KEY_LEVEL_TIMES) == 1:
         axes = [axes]
     for ax, level_name in zip(axes, KEY_LEVEL_TIMES.keys()):
-        sub = train[train["Level_Name"].eq(level_name)].sort_values("Bucket_Time")
-        ax.plot(sub["Bucket_Time"], sub["touch_pct"], marker="o", markersize=2, linewidth=1.2)
+        sub = train[train["Level_Name"].eq(level_name)].sort_values("Bucket_Session_Minute")
+        ax.plot(range(len(sub)), sub["touch_pct"], marker="o", markersize=2, linewidth=1.2)
         ax.set_title(level_name)
         ax.set_ylabel("Touch later (%)")
         ax.yaxis.set_major_formatter(mticker.PercentFormatter())
@@ -905,35 +1002,37 @@ def _forward_touch_chart(df: pd.DataFrame, freq_label: str, filename: str):
         step = max(1, len(sub) // 12)
         ax.set_xticks(range(0, len(sub), step))
         ax.set_xticklabels(sub["Bucket_Time"].iloc[::step], rotation=45, ha="right")
-    fig.suptitle(f"{SYMBOL} probability level is touched after bucket start ({freq_label}, Train)")
+    fig.suptitle(f"{symbol} probability level is touched after bucket start ({freq_label}, Train; x-axis runs 18:00 → 17:00)")
     fig.tight_layout()
-    _save(fig, f"research_events/intraday_levels/{filename}")
+    _save(fig, filename, output_dir=output_dir)
 
-def run_intraday_key_level_research(path: str = DATA_PATH) -> pd.DataFrame:
+def run_intraday_key_level_research(path: str = DATA_PATH, symbol: str = None, output_dir: Path = None) -> pd.DataFrame:
     """Generate intraday key-level revisit/path research from source 1m data."""
-    print("[Research] Intraday key-level revisits from 1m source ...")
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("intraday_levels", symbol)
+    print(f"[Research] {symbol} intraday key-level revisits from 1m source ...")
     df_1m = load_1m_source(path)
     rows = build_intraday_key_level_rows(df_1m)
-    _write_csv(rows, "intraday_level_rows", output_dir=INTRADAY_LEVEL_OUTPUT_DIR)
+    _write_csv(rows, "intraday_level_rows", output_dir=out_dir)
 
     dist = intraday_level_revisit_distribution(rows)
-    _write_csv(dist, "intraday_level_revisit_distribution", output_dir=INTRADAY_LEVEL_OUTPUT_DIR)
-    _barh_chart(dist[dist["Split"].eq("Train")].sort_values("revisit_pct", ascending=False), ["Level_Name"], "revisit_pct", f"{SYMBOL} intraday key-level revisit rate (Train)", "intraday_levels/intraday_level_revisit_distribution")
+    _write_csv(dist, "intraday_level_revisit_distribution", output_dir=out_dir)
+    _barh_chart(dist[dist["Split"].eq("Train")].sort_values("revisit_pct", ascending=False), ["Level_Name"], "revisit_pct", f"{symbol} intraday key-level revisit rate (Train)", "intraday_level_revisit_distribution", output_dir=out_dir)
 
     first = intraday_level_first_revisit_distribution(rows)
-    _write_csv(first, "intraday_level_first_revisit_by_session", output_dir=INTRADAY_LEVEL_OUTPUT_DIR)
-    _barh_chart(first[first["Split"].eq("Train")].sort_values("pct", ascending=False), ["Level_Name", "First_Revisit_Session"], "pct", f"{SYMBOL} first revisit session by key level (Train)", "intraday_levels/intraday_level_first_revisit_by_session")
+    _write_csv(first, "intraday_level_first_revisit_by_session", output_dir=out_dir)
+    _barh_chart(first[first["Split"].eq("Train")].sort_values("pct", ascending=False), ["Level_Name", "First_Revisit_Session"], "pct", f"{symbol} first revisit session by key level (Train)", "intraday_level_first_revisit_by_session", output_dir=out_dir)
 
     outcomes = intraday_level_path_outcomes(rows)
-    _write_csv(outcomes, "intraday_level_path_outcomes", output_dir=INTRADAY_LEVEL_OUTPUT_DIR)
+    _write_csv(outcomes, "intraday_level_path_outcomes", output_dir=out_dir)
 
     forward_15m = intraday_level_forward_touch_distribution(df_1m, bucket_freq="15min")
-    _write_csv(forward_15m, "intraday_level_forward_touch_15m", output_dir=INTRADAY_LEVEL_OUTPUT_DIR)
-    _forward_touch_chart(forward_15m, "15m", "intraday_level_forward_touch_15m")
+    _write_csv(forward_15m, "intraday_level_forward_touch_15m", output_dir=out_dir)
+    _forward_touch_chart(forward_15m, "15m", "intraday_level_forward_touch_15m", symbol=symbol, output_dir=out_dir)
 
     forward_1h = intraday_level_forward_touch_distribution(df_1m, bucket_freq="1h")
-    _write_csv(forward_1h, "intraday_level_forward_touch_1h", output_dir=INTRADAY_LEVEL_OUTPUT_DIR)
-    _forward_touch_chart(forward_1h, "1h", "intraday_level_forward_touch_1h")
+    _write_csv(forward_1h, "intraday_level_forward_touch_1h", output_dir=out_dir)
+    _forward_touch_chart(forward_1h, "1h", "intraday_level_forward_touch_1h", symbol=symbol, output_dir=out_dir)
 
     print("\n[Research] Intraday key-level revisit distribution:")
     print(dist.to_string(index=False))
@@ -1010,17 +1109,24 @@ def intraday_to_weekly_path_dependency(
         detail["Weekly_High_Formed_By_Day"] = np.nan
         detail["Weekly_Low_Formed_By_Day"] = np.nan
 
+    detail["Weekday"] = trading_weekday_index(pd.DatetimeIndex(detail["Trading_Day"]))
+
     records = []
     for metric in PATH_DEPENDENCY_METRICS:
         bucket_col = f"{metric}_Bucket"
-        for keys, group in detail.groupby(["Split", "Level_Name", bucket_col], dropna=False):
-            split, level_name, bucket = keys
+        # Weekday is part of the key: a weekly label is contemporaneous with a
+        # Friday row and forward-looking for a Monday row. Pooling them mixes
+        # prediction with description and repeats one weekly label up to 5 times.
+        for keys, group in detail.groupby(["Split", "Weekday", "Level_Name", bucket_col], dropna=False):
+            split, weekday, level_name, bucket = keys
             records.append({
                 "Split": split,
+                "Weekday": weekday,
                 "Level_Name": level_name,
                 "Metric": metric,
                 "Metric_Bucket": bucket,
                 "n": len(group),
+                "n_weeks": int(group["Week_Start"].nunique()),
                 "day_bullish_pct": _pct(group["Day_Bullish"]),
                 "day_close_above_level_pct": _pct(group["Day_Close_Above_Level"]),
                 "week_bullish_pct": _pct(group["Week_Bullish"]),
@@ -1031,16 +1137,17 @@ def intraday_to_weekly_path_dependency(
                 "weekly_high_formed_by_day_pct": _pct(group["Weekly_High_Formed_By_Day"].dropna()) if group["Weekly_High_Formed_By_Day"].notna().any() else np.nan,
                 "weekly_low_formed_by_day_pct": _pct(group["Weekly_Low_Formed_By_Day"].dropna()) if group["Weekly_Low_Formed_By_Day"].notna().any() else np.nan,
             })
-    summary = pd.DataFrame.from_records(records).sort_values(["Split", "Level_Name", "Metric", "Metric_Bucket"]).reset_index(drop=True)
+    summary = pd.DataFrame.from_records(records).sort_values(["Split", "Weekday", "Level_Name", "Metric", "Metric_Bucket"]).reset_index(drop=True)
     return detail, summary
 
 
-def run_intraday_to_weekly_path_dependency_research(symbol: str, path: str, output_dir: Path = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_intraday_to_weekly_path_dependency_research(symbol: str = None, path: str = DATA_PATH, output_dir: Path = None, resample_to: str = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run intraday → weekly path dependency research for one symbol."""
-    out_dir = output_dir or (EVENT_OUTPUT_DIR / f"path_dependency_{symbol.lower()}")
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("path_dependency", symbol)
     print(f"[Research] {symbol} intraday → weekly path dependency ...")
     df_1m = load_1m_source(path)
-    df = load_and_resample(path, RESAMPLE_TO)
+    df = load_and_resample(path, resample_to or RESAMPLE_TO)
     weekly = build_weekly(df)
     event_rows = build_event_rows(df)
     intraday = build_intraday_key_level_rows(df_1m)
@@ -1117,15 +1224,6 @@ def _window_timestamp(trading_day: pd.Timestamp, hm: tuple[int, int]) -> pd.Time
     return trading_day.replace(hour=hour, minute=minute)
 
 
-def _session_after_window(day: pd.DataFrame, window_end: pd.Timestamp) -> pd.DataFrame:
-    current = session_of(window_end)
-    after = day[day.index >= window_end].copy()
-    if after.empty:
-        return after
-    sessions = pd.Series([session_of(ts) for ts in after.index], index=after.index)
-    return after[sessions != current]
-
-
 def build_relative_level_path_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
     """Build time/distance features by trading day × key level × pre-session window."""
     records = []
@@ -1141,6 +1239,8 @@ def build_relative_level_path_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
         highs = day["High"].to_numpy()
         lows = day["Low"].to_numpy()
         closes = day["Close"].to_numpy()
+        volumes = day["Volume"].to_numpy()
+        sessions = session_of_index(idx)
         day_open = float(opens[0])
         day_close = float(closes[-1])
 
@@ -1168,7 +1268,7 @@ def build_relative_level_path_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
                 w_highs = highs[start_pos:end_pos]
                 w_lows = lows[start_pos:end_pos]
                 w_closes = closes[start_pos:end_pos]
-                w_volumes = day["Volume"].to_numpy()[start_pos:end_pos]
+                w_volumes = volumes[start_pos:end_pos]
                 above = w_closes > level_value
                 below = w_closes < level_value
                 touching = (w_lows <= level_value) & (w_highs >= level_value)
@@ -1177,23 +1277,20 @@ def build_relative_level_path_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
                 window_twap = float(np.mean(w_closes))
                 typical = (w_highs + w_lows + w_closes) / 3
                 vol_sum = float(np.sum(w_volumes))
-                window_vwap = float(np.sum(typical * w_volumes) / vol_sum) if vol_sum else window_twap
+                # No volume means no VWAP. Falling back to TWAP would silently make
+                # the two signals identical instead of flagging the window as unusable.
+                window_vwap = float(np.sum(typical * w_volumes) / vol_sum) if vol_sum > 0 else np.nan
                 prior_levels = {name: val for name, val in level_values.items() if level_timestamps[name] <= end_ts}
                 composite = composite_level_context(float(w_close), prior_levels)
 
-                current_session = session_of(end_ts)
-                after_pos = int(idx.searchsorted(end_ts, side="left"))
                 next_return = np.nan
                 next_bullish = np.nan
-                if after_pos < len(idx):
-                    after_idx = idx[after_pos:]
-                    after_sessions = np.array([session_of(ts) for ts in after_idx])
-                    next_mask = after_sessions != current_session
-                    if next_mask.any():
-                        next_close = float(closes[after_pos:][next_mask][-1])
-                        start_close = float(w_close)
-                        next_return = (next_close / start_close - 1) * 100 if start_close else np.nan
-                        next_bullish = bool(next_close > start_close)
+                bounds = _next_session_bounds(sessions, end_pos - 1)
+                if bounds is not None:
+                    next_close = float(closes[bounds[1]])
+                    start_close = float(w_close)
+                    next_return = (next_close / start_close - 1) * 100 if start_close else np.nan
+                    next_bullish = bool(next_close > start_close)
 
                 records.append({
                     "Trading_Day": trading_day,
@@ -1204,6 +1301,10 @@ def build_relative_level_path_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
                     "Window_Name": window_name,
                     "Window_Start": start_ts,
                     "Window_End": end_ts,
+                    # False when the level is only defined AFTER the window closes
+                    # (e.g. the 13:00 open measured over Globex→Midnight). Those
+                    # combinations are look-ahead and are excluded from summaries.
+                    "Level_Defined_By_Window_End": bool(level_timestamps[level_name] <= end_ts),
                     "Bars_Total": int(len(w_closes)),
                     "Pct_Bars_Above_Level": round(float(above.mean() * 100), 4),
                     "Pct_Bars_Below_Level": round(float(below.mean() * 100), 4),
@@ -1213,11 +1314,11 @@ def build_relative_level_path_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
                     "Max_Distance_Above": round(float(dist_above.max()), 4),
                     "Max_Distance_Below": round(float(dist_below.max()), 4),
                     "Window_TWAP": round(window_twap, 4),
-                    "Window_VWAP": round(window_vwap, 4),
+                    "Window_VWAP": round(window_vwap, 4) if not pd.isna(window_vwap) else np.nan,
                     "TWAP_Distance_To_Level": round(window_twap - level_value, 4),
-                    "VWAP_Distance_To_Level": round(window_vwap - level_value, 4),
+                    "VWAP_Distance_To_Level": round(window_vwap - level_value, 4) if not pd.isna(window_vwap) else np.nan,
                     "TWAP_Above_Level": bool(window_twap > level_value),
-                    "VWAP_Above_Level": bool(window_vwap > level_value),
+                    "VWAP_Above_Level": bool(window_vwap > level_value) if not pd.isna(window_vwap) else None,
                     **composite,
                     "Window_Close_Above_Level": bool(w_close > level_value),
                     "Window_Return_Pct": (w_close / w_open - 1) * 100 if w_open else np.nan,
@@ -1248,10 +1349,24 @@ def apply_relative_path_buckets(rows: pd.DataFrame, features: list = None) -> pd
     return out
 
 
-def relative_path_intraday_outcomes(rows: pd.DataFrame, features: list = None) -> pd.DataFrame:
+def drop_lookahead_level_windows(rows: pd.DataFrame, include_lookahead: bool = False) -> pd.DataFrame:
+    """
+    Keep only level × window pairs where the level exists before the window ends.
+
+    `build_relative_level_path_rows` crosses every key level with every window, so
+    3 of the 16 combinations per day measure bars against a level that is not
+    defined until hours later (e.g. the 13:00 open over Globex→Midnight). Those
+    rows are look-ahead and must not reach a conditional summary.
+    """
+    if include_lookahead or "Level_Defined_By_Window_End" not in rows:
+        return rows
+    return rows[rows["Level_Defined_By_Window_End"].astype(bool)]
+
+
+def relative_path_intraday_outcomes(rows: pd.DataFrame, features: list = None, include_lookahead: bool = False) -> pd.DataFrame:
     """Summarize next-session and daily outcomes by relative path buckets."""
     features = features or RELATIVE_PATH_FEATURES
-    detail = apply_relative_path_buckets(rows, features)
+    detail = apply_relative_path_buckets(drop_lookahead_level_windows(rows, include_lookahead), features)
     records = []
     for feature in features:
         bucket_col = f"{feature}_Bucket"
@@ -1291,10 +1406,10 @@ def relative_path_intraday_outcomes(rows: pd.DataFrame, features: list = None) -
     return pd.DataFrame.from_records(records).sort_values(["Split", "Level_Name", "Window_Name", "Feature", "Feature_Bucket"]).reset_index(drop=True)
 
 
-def relative_path_to_weekly_outcomes(rows: pd.DataFrame, weekly: pd.DataFrame, event_rows: pd.DataFrame = None, features: list = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def relative_path_to_weekly_outcomes(rows: pd.DataFrame, weekly: pd.DataFrame, event_rows: pd.DataFrame = None, features: list = None, include_lookahead: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Summarize Monday/Tuesday relative path buckets vs weekly outcomes."""
     features = features or RELATIVE_PATH_FEATURES
-    detail = apply_relative_path_buckets(rows, features)
+    detail = apply_relative_path_buckets(drop_lookahead_level_windows(rows, include_lookahead), features)
     detail = detail[detail["Weekday"].isin(["Monday", "Tuesday"])].copy()
     detail["Week_Start"] = pd.to_datetime(detail["Trading_Day"]).map(trading_week_monday)
     weekly_cols = ["Bull_Bear", "High_Weekday", "Low_Weekday", "High_Session", "Low_Session"]
@@ -1328,6 +1443,7 @@ def relative_path_to_weekly_outcomes(rows: pd.DataFrame, weekly: pd.DataFrame, e
                 "Feature": feature,
                 "Feature_Bucket": bucket,
                 "n": len(group),
+                "n_weeks": int(group["Week_Start"].nunique()),
                 "week_bullish_pct": _pct(group["Week_Bullish"]),
                 "weekly_high_friday_pct": _pct(group["Weekly_High_Friday"]),
                 "weekly_low_monday_pct": _pct(group["Weekly_Low_Monday"]),
@@ -1349,6 +1465,7 @@ def relative_path_to_weekly_outcomes(rows: pd.DataFrame, weekly: pd.DataFrame, e
                 "Feature": cat_feature,
                 "Feature_Bucket": bucket,
                 "n": len(group),
+                "n_weeks": int(group["Week_Start"].nunique()),
                 "week_bullish_pct": _pct(group["Week_Bullish"]),
                 "weekly_high_friday_pct": _pct(group["Weekly_High_Friday"]),
                 "weekly_low_monday_pct": _pct(group["Weekly_Low_Monday"]),
@@ -1361,13 +1478,14 @@ def relative_path_to_weekly_outcomes(rows: pd.DataFrame, weekly: pd.DataFrame, e
     return detail, summary
 
 
-def run_relative_path_research(symbol: str, path: str, output_dir: Path = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def run_relative_path_research(symbol: str = None, path: str = DATA_PATH, output_dir: Path = None, resample_to: str = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Run relative level path research for one symbol."""
-    out_dir = output_dir or (EVENT_OUTPUT_DIR / f"relative_path_{symbol.lower()}")
+    symbol = symbol or SYMBOL
+    out_dir = output_dir or module_output_dir("relative_path", symbol)
     print(f"[Research] {symbol} relative level path ...")
     df_1m = load_1m_source(path)
     df = (
-        df_1m.resample(RESAMPLE_TO, label="left", closed="left")
+        df_1m.resample(resample_to or RESAMPLE_TO, label="left", closed="left")
         .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
         .dropna(subset=["Open"])
     )
@@ -1387,9 +1505,9 @@ def run_relative_path_research(symbol: str, path: str, output_dir: Path = None) 
 # CHART UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _save(fig: plt.Figure, name: str):
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUTPUT_DIR / f"{name}.png"
+def _save(fig: plt.Figure, name: str, output_dir: Path = None):
+    base = Path(output_dir) if output_dir is not None else OUTPUT_DIR
+    path = base / f"{name}.png"
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     print(f"  → {path}")
@@ -1418,13 +1536,14 @@ def _label_bars(ax: plt.Axes, min_pct: float = 0.5):
 # STANDARD ANALYSES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def chart_day_distribution(weekly: pd.DataFrame):
+def chart_day_distribution(weekly: pd.DataFrame, symbol: str = None, resample_to: str = None, output_dir: Path = None):
     """
     Two grouped-bar charts:
       • Which weekday did the weekly LOW form?
       • Which weekday did the weekly HIGH form?
     Each chart splits by Bullish / Bearish weeks.
     """
+    symbol, resample_to = symbol or SYMBOL, resample_to or RESAMPLE_TO
     for extreme, col in [("LOW", "Low_Weekday"), ("HIGH", "High_Weekday")]:
         fig, ax = plt.subplots(figsize=(10, 5))
         x = np.arange(len(DAYS))
@@ -1441,20 +1560,21 @@ def chart_day_distribution(weekly: pd.DataFrame):
         ax.set_xticklabels(DAYS)
         ax.set_ylabel("% of weeks")
         ax.set_title(
-            f"{SYMBOL} — Day when weekly {extreme} formed  "
-            f"[resampled: {RESAMPLE_TO}]"
+            f"{symbol} — Day when weekly {extreme} formed  "
+            f"[resampled: {resample_to}]"
         )
         ax.legend()
         ax.yaxis.set_major_formatter(mticker.PercentFormatter())
         ax.grid(axis="y", alpha=0.25, linestyle="--")
         fig.tight_layout()
-        _save(fig, f"1_weekly_{extreme.lower()}_day")
+        _save(fig, f"1_weekly_{extreme.lower()}_day", output_dir=output_dir)
 
 
-def chart_session_distribution(weekly: pd.DataFrame):
+def chart_session_distribution(weekly: pd.DataFrame, symbol: str = None, resample_to: str = None, output_dir: Path = None):
     """
     Two grouped-bar charts: which session did the weekly LOW / HIGH form in?
     """
+    symbol, resample_to = symbol or SYMBOL, resample_to or RESAMPLE_TO
     for extreme, col in [("LOW", "Low_Session"), ("HIGH", "High_Session")]:
         fig, ax = plt.subplots(figsize=(10, 5))
         x = np.arange(len(SESSION_ORDER))
@@ -1471,24 +1591,25 @@ def chart_session_distribution(weekly: pd.DataFrame):
         ax.set_xticklabels(SESSION_ORDER)
         ax.set_ylabel("% of weeks")
         ax.set_title(
-            f"{SYMBOL} — Session when weekly {extreme} formed  "
-            f"[resampled: {RESAMPLE_TO}]"
+            f"{symbol} — Session when weekly {extreme} formed  "
+            f"[resampled: {resample_to}]"
         )
         ax.legend()
         ax.yaxis.set_major_formatter(mticker.PercentFormatter())
         ax.grid(axis="y", alpha=0.25, linestyle="--")
         fig.tight_layout()
-        _save(fig, f"2_weekly_{extreme.lower()}_session")
+        _save(fig, f"2_weekly_{extreme.lower()}_session", output_dir=output_dir)
 
 
-def chart_hour_distribution(weekly: pd.DataFrame):
+def chart_hour_distribution(weekly: pd.DataFrame, symbol: str = None, resample_to: str = None, output_dir: Path = None):
     """
     Four-panel chart: hour-of-day distributions for LOW and HIGH,
     split by Bullish / Bearish.
     """
+    symbol, resample_to = symbol or SYMBOL, resample_to or RESAMPLE_TO
     fig, axes = plt.subplots(2, 2, figsize=(14, 8), sharey=False)
     fig.suptitle(
-        f"{SYMBOL} — Hour (ET) when weekly extreme formed  [resampled: {RESAMPLE_TO}]",
+        f"{symbol} — Hour (ET) when weekly extreme formed  [resampled: {resample_to}]",
         fontsize=12,
     )
 
@@ -1515,21 +1636,22 @@ def chart_hour_distribution(weekly: pd.DataFrame):
         ax.grid(axis="y", alpha=0.25, linestyle="--")
 
     fig.tight_layout()
-    _save(fig, "3_weekly_extreme_hours")
+    _save(fig, "3_weekly_extreme_hours", output_dir=output_dir)
 
 
-def chart_day_session_heatmap(weekly: pd.DataFrame):
+def chart_day_session_heatmap(weekly: pd.DataFrame, symbol: str = None, resample_to: str = None, output_dir: Path = None):
     """
     Two heatmaps (Bullish / Bearish) for LOW and HIGH:
     weekday × session joint distribution.
     """
+    symbol, resample_to = symbol or SYMBOL, resample_to or RESAMPLE_TO
     for extreme, day_col, sess_col in [
         ("LOW",  "Low_Weekday",  "Low_Session"),
         ("HIGH", "High_Weekday", "High_Session"),
     ]:
         fig, axes = plt.subplots(1, 2, figsize=(13, 5))
         fig.suptitle(
-            f"{SYMBOL} — {extreme}: Weekday × Session  [resampled: {RESAMPLE_TO}]",
+            f"{symbol} — {extreme}: Weekday × Session  [resampled: {resample_to}]",
             fontsize=12,
         )
 
@@ -1561,7 +1683,7 @@ def chart_day_session_heatmap(weekly: pd.DataFrame):
             plt.colorbar(im, ax=ax, label="% of weeks")
 
         fig.tight_layout()
-        _save(fig, f"4_weekly_{extreme.lower()}_day_session_heatmap")
+        _save(fig, f"4_weekly_{extreme.lower()}_day_session_heatmap", output_dir=output_dir)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1576,6 +1698,9 @@ def run_experiment(
     target_order: list = None,
     title: str = None,
     filename: str = None,
+    symbol: str = None,
+    resample_to: str = None,
+    output_dir: Path = None,
 ):
     """
     Test whether `factor_col` (X) predicts `target_col` (Y).
@@ -1608,6 +1733,7 @@ def run_experiment(
         run_experiment(weekly, "Low_Session", "High_Weekday",
                        factor_order=SESSION_ORDER, target_order=DAYS)
     """
+    symbol, resample_to = symbol or SYMBOL, resample_to or RESAMPLE_TO
     clean = weekly[[factor_col, target_col]].dropna()
 
     if factor_order is None:
@@ -1674,98 +1800,130 @@ def run_experiment(
 
     chart_title = title or f"Experiment: {factor_col}  →  {target_col}"
     fig.suptitle(
-        f"{SYMBOL} — {chart_title}  [resampled: {RESAMPLE_TO}]",
+        f"{symbol} — {chart_title}  [resampled: {resample_to}]",
         fontsize=12,
     )
     fig.tight_layout()
 
     stem = filename or f"exp_{factor_col}__{target_col}".replace(" ", "_")
-    _save(fig, stem)
+    _save(fig, stem, output_dir=output_dir)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main():
-        print(f"Loading  {DATA_PATH} ...")
-        df = load_and_resample(DATA_PATH, RESAMPLE_TO)
-        print(f"  {len(df):,} bars  ({df.index[0].date()} → {df.index[-1].date()})")
+MODULES = ["weekly_charts", "weekly_events", "weekly_open_revisit", "intraday_levels", "path_dependency", "relative_path"]
 
-        print("Building weekly summary ...")
-        weekly = build_weekly(df)
-        bull = (weekly["Bull_Bear"] == "Bullish").sum()
-        bear = (weekly["Bull_Bear"] == "Bearish").sum()
-        print(f"  {len(weekly)} weeks  |  Bullish: {bull}  |  Bearish: {bear}")
 
-        # ── Standard Distribution Charts ─────────────────────────────────────────
-        print("\n[Charts] Day distributions ...")
-        chart_day_distribution(weekly)
+def run_weekly_charts(weekly: pd.DataFrame, symbol: str, resample_to: str, output_dir: Path) -> None:
+    """Standard weekly distribution charts and the built-in experiment set."""
+    print("\n[Charts] Day distributions ...")
+    chart_day_distribution(weekly, symbol=symbol, resample_to=resample_to, output_dir=output_dir)
+    print("[Charts] Session distributions ...")
+    chart_session_distribution(weekly, symbol=symbol, resample_to=resample_to, output_dir=output_dir)
+    print("[Charts] Hour distributions ...")
+    chart_hour_distribution(weekly, symbol=symbol, resample_to=resample_to, output_dir=output_dir)
+    print("[Charts] Day × Session heatmaps ...")
+    chart_day_session_heatmap(weekly, symbol=symbol, resample_to=resample_to, output_dir=output_dir)
 
-        print("[Charts] Session distributions ...")
-        chart_session_distribution(weekly)
-
-        print("[Charts] Hour distributions ...")
-        chart_hour_distribution(weekly)
-
-        print("[Charts] Day × Session heatmaps ...")
-        chart_day_session_heatmap(weekly)
-
-        # ── Event Distribution Research ─────────────────────────────────────────
-        run_event_distribution_research(df, weekly)
-        run_weekly_open_revisit_research(DATA_PATH, weekly)
-        run_intraday_key_level_research(DATA_PATH)
-
-        # ── Experiments ──────────────────────────────────────────────────────────
-        print("\n[Experiments]")
-
-        # Does week direction predict which day the LOW forms?
+    print("\n[Experiments]")
+    experiments = [
+        ("Bull_Bear", "Low_Weekday", ["Bullish", "Bearish"], DAYS, "Does week direction predict LOW weekday?"),
+        ("Bull_Bear", "High_Weekday", ["Bullish", "Bearish"], DAYS, "Does week direction predict HIGH weekday?"),
+        ("Prev_Bull_Bear", "Bull_Bear", ["Bullish", "Bearish"], ["Bullish", "Bearish"], "Does prev-week direction predict current week direction?"),
+        ("Bull_Bear", "Low_Session", ["Bullish", "Bearish"], SESSION_ORDER, "Does week direction predict LOW session?"),
+        ("Bull_Bear", "High_Session", ["Bullish", "Bearish"], SESSION_ORDER, "Does week direction predict HIGH session?"),
+    ]
+    for factor, target, factor_order, target_order, title in experiments:
         run_experiment(
-            weekly, "Bull_Bear", "Low_Weekday",
-            factor_order=["Bullish", "Bearish"],
-            target_order=DAYS,
-            title="Does week direction predict LOW weekday?",
+            weekly, factor, target,
+            factor_order=factor_order, target_order=target_order, title=title,
+            symbol=symbol, resample_to=resample_to, output_dir=output_dir,
         )
 
-        # Does week direction predict which day the HIGH forms?
-        run_experiment(
-            weekly, "Bull_Bear", "High_Weekday",
-            factor_order=["Bullish", "Bearish"],
-            target_order=DAYS,
-            title="Does week direction predict HIGH weekday?",
-        )
 
-        # Does previous week direction predict current week direction?
-        run_experiment(
-            weekly, "Prev_Bull_Bear", "Bull_Bear",
-            factor_order=["Bullish", "Bearish"],
-            target_order=["Bullish", "Bearish"],
-            title="Does prev-week direction predict current week direction?",
-        )
+def run_research(
+    symbol: str = None,
+    data_path: str = None,
+    resample_to: str = None,
+    output_dir: Path = None,
+    modules: list = None,
+) -> dict:
+    """
+    Run the selected research modules for one symbol.
 
-        # Does week direction predict which session the LOW forms in?
-        run_experiment(
-            weekly, "Bull_Bear", "Low_Session",
-            factor_order=["Bullish", "Bearish"],
-            target_order=SESSION_ORDER,
-            title="Does week direction predict LOW session?",
-        )
+    Every module writes to its own symbol-scoped directory, so ES and NQ runs
+    never overwrite each other.
+    """
+    symbol = (symbol or SYMBOL).upper()
+    data_path = str(data_path or DATA_PATH)
+    resample_to = resample_to or RESAMPLE_TO
+    root = Path(output_dir) if output_dir is not None else OUTPUT_DIR
+    events_root = root / "research_events"
+    modules = list(modules or MODULES)
+    unknown = [m for m in modules if m not in MODULES]
+    if unknown:
+        raise ValueError(f"Unknown module(s): {', '.join(unknown)}. Known: {', '.join(MODULES)}")
 
-        # Does week direction predict which session the HIGH forms in?
-        run_experiment(
-            weekly, "Bull_Bear", "High_Session",
-            factor_order=["Bullish", "Bearish"],
-            target_order=SESSION_ORDER,
-            title="Does week direction predict HIGH session?",
-        )
+    print(f"Loading  {data_path} ...")
+    df = load_and_resample(data_path, resample_to)
+    print(f"  {len(df):,} bars  ({df.index[0].date()} → {df.index[-1].date()})")
 
-        # ── Add your own experiments below ───────────────────────────────────────
-        # run_experiment(weekly, "Low_Session", "High_Weekday",
-        #                factor_order=SESSION_ORDER, target_order=DAYS)
-        # run_experiment(weekly, "Low_Weekday", "High_Weekday",
-        #                factor_order=DAYS, target_order=DAYS)
+    print("Building weekly summary ...")
+    weekly = build_weekly(df)
+    bull = (weekly["Bull_Bear"] == "Bullish").sum()
+    bear = (weekly["Bull_Bear"] == "Bearish").sum()
+    print(f"  {len(weekly)} weeks  |  Bullish: {bull}  |  Bearish: {bear}")
 
-        print(f"\nDone. Charts saved to  {OUTPUT_DIR}/")
+    results = {"weekly": weekly}
+    if "weekly_charts" in modules:
+        run_weekly_charts(weekly, symbol, resample_to, root / symbol.lower())
+    if "weekly_events" in modules:
+        results["event_rows"] = run_event_distribution_research(
+            df, weekly, symbol=symbol, output_dir=module_output_dir("weekly_events", symbol, events_root))
+    if "weekly_open_revisit" in modules:
+        results["weekly_open_revisit"] = run_weekly_open_revisit_research(
+            data_path, weekly, symbol=symbol, output_dir=module_output_dir("weekly_open_revisit", symbol, events_root))
+    if "intraday_levels" in modules:
+        results["intraday_levels"] = run_intraday_key_level_research(
+            data_path, symbol=symbol, output_dir=module_output_dir("intraday_levels", symbol, events_root))
+    if "path_dependency" in modules:
+        results["path_dependency"] = run_intraday_to_weekly_path_dependency_research(
+            symbol, data_path, output_dir=module_output_dir("path_dependency", symbol, events_root), resample_to=resample_to)
+    if "relative_path" in modules:
+        results["relative_path"] = run_relative_path_research(
+            symbol, data_path, output_dir=module_output_dir("relative_path", symbol, events_root), resample_to=resample_to)
+
+    print(f"\nDone. Output written under  {root}/")
+    return results
+
+
+def build_arg_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="po3_research",
+        description="Run PO3 futures path research for one symbol.",
+    )
+    parser.add_argument("--symbol", default=SYMBOL, help=f"Symbol label for titles and output paths. Default: {SYMBOL}")
+    parser.add_argument("--data", default=DATA_PATH, help=f"1-minute OHLCV parquet. Default: {DATA_PATH}")
+    parser.add_argument("--resample-to", default=RESAMPLE_TO, help=f"Resample interval for weekly work. Default: {RESAMPLE_TO}")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR, help=f"Output root. Default: {OUTPUT_DIR}")
+    parser.add_argument("--modules", nargs="+", choices=MODULES, default=MODULES, metavar="MODULE",
+                        help=f"Modules to run. Choices: {', '.join(MODULES)}. Default: all")
+    return parser
+
+
+def main(argv: list = None):
+    args = build_arg_parser().parse_args(argv)
+    run_research(
+        symbol=args.symbol,
+        data_path=args.data,
+        resample_to=args.resample_to,
+        output_dir=args.output_dir,
+        modules=args.modules,
+    )
 
 
 if __name__ == "__main__":
