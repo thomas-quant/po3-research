@@ -16,6 +16,9 @@ def test_module_list_matches_the_documented_research_modules():
         "intraday_levels",
         "path_dependency",
         "relative_path",
+        "monthly_extremes",
+        "monthly_levels",
+        "month_context",
     ]
 
 
@@ -65,3 +68,22 @@ def test_analysis_wrapper_keeps_its_own_module_identity():
     assert Path(analysis.__file__).name == "analysis.py"
     assert "Backward-compatible entrypoint" in analysis.__doc__
     assert analysis.build_weekly is not None
+
+
+def test_cli_accepts_the_monthly_modules():
+    args = build_arg_parser().parse_args(
+        ["--symbol", "NQ", "--modules", "monthly_extremes", "monthly_levels", "month_context"]
+    )
+
+    assert args.modules == ["monthly_extremes", "monthly_levels", "month_context"]
+
+
+def test_monthly_output_directories_are_symbol_scoped():
+    root = Path("output/research_events")
+
+    for module in ["monthly_extremes", "monthly_levels", "month_context"]:
+        es = module_output_dir(module, "ES", root)
+        nq = module_output_dir(module, "NQ", root)
+        assert es.name == f"{module}_es"
+        assert nq.name == f"{module}_nq"
+        assert es != nq

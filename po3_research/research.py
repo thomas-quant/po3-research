@@ -2721,7 +2721,10 @@ def run_experiment(
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-MODULES = ["weekly_charts", "weekly_events", "weekly_open_revisit", "intraday_levels", "path_dependency", "relative_path"]
+MODULES = [
+    "weekly_charts", "weekly_events", "weekly_open_revisit", "intraday_levels",
+    "path_dependency", "relative_path", "monthly_extremes", "monthly_levels", "month_context",
+]
 
 
 def run_weekly_charts(weekly: pd.DataFrame, symbol: str, resample_to: str, output_dir: Path) -> None:
@@ -2802,6 +2805,18 @@ def run_research(
     if "relative_path" in modules:
         results["relative_path"] = run_relative_path_research(
             symbol, data_path, output_dir=module_output_dir("relative_path", symbol, events_root), resample_to=resample_to)
+    # monthly_extremes runs off the resampled frame, as the weekly charts do.
+    # monthly_levels and month_context need 1-minute bars.
+    if "monthly_extremes" in modules:
+        results["monthly_extremes"] = run_monthly_extremes_research(
+            df, symbol=symbol, output_dir=module_output_dir("monthly_extremes", symbol, events_root))
+    if "monthly_levels" in modules:
+        results["monthly_levels"] = run_monthly_levels_research(
+            symbol, data_path, output_dir=module_output_dir("monthly_levels", symbol, events_root))
+    if "month_context" in modules:
+        results["month_context"] = run_month_context_research(
+            symbol, data_path, output_dir=module_output_dir("month_context", symbol, events_root),
+            resample_to=resample_to)
 
     print(f"\nDone. Output written under  {root}/")
     return results
