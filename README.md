@@ -83,6 +83,72 @@ Interpretation: once the obvious “where did the window close vs the level?” 
 
 ![NQ TWAP/VWAP predictive matrix](output/examples/nq_twap_vwap_predictive_matrix.png)
 
+### Monthly path structure is a drift artifact on both symbols
+
+> The three findings below were generated on 2026-08-10 from the current parquet and
+> are **not** subject to the staleness warning above, which applies to the tracked
+> `output/examples/` gallery. Reproduce with the monthly and week modules.
+
+Monthly extreme timing looks strong against a uniform baseline and disappears against
+a fair one. ES, 192 complete months, observed High-Late **54.2%**:
+
+| Null | ES High-Late | p | NQ High-Late | p |
+| --- | ---: | ---: | ---: | ---: |
+| uniform — not produced, and wrong | 33.3 | — | 33.3 | — |
+| `arcsine` — randomness alone | 39.2 | — | 39.2 | — |
+| `driftless` | 38.2 | 0.000 | 38.2 | 0.000 |
+| `drift` | 44.7 | 0.004 | 46.0 | 0.046 |
+| `drift_vol` | 47.3 | 0.064 | 48.4 | 0.236 |
+| `shuffle` | 52.5 | 0.586 | 52.4 | 0.832 |
+
+Across all 30 bucket cells the minimum p under `shuffle` is 0.098 (ES) and 0.108 (NQ) —
+nothing significant on either symbol, before any multiple-comparisons correction.
+
+Level touch rates go the same way. `Prior_Month_High` is touched in 69.3% of months
+against `Prior_Month_Low`'s 30.7% (ES) and 69.3% / 34.4% (NQ) — an asymmetry produced
+by drift and volatility, not by the levels. Every rung reproduces the high-touch rate;
+the low-touch rate is significant against `driftless` (p=0.002) and `drift` (p=0.046)
+and explained once each month's own volatility is priced in (`drift_vol` p=0.212).
+
+One cell survives the strictest rung, pointing away from a "levels attract price"
+reading: ES touches its prior-month high **less** than its own returns reshuffled
+(69.3% vs 76.5%, p=0.000). That is 1 significant cell of 16 and carries the same
+multiple-comparisons caveat as every other grid here.
+
+### Month-state does not condition daily direction
+
+Every knowable month-state conditioner sits within ~2 ppt of base rate on both
+symbols (`Third_In_Month` 54.0–56.1 against a 55% base). Train→OOS sign agreement is
+0.49–0.70 across the intraday grid, and weekly `Week_Bullish` correlates −0.07 on ES
+and +0.20 on NQ — the two symbols do not agree on the sign.
+
+The two conditioners that appear to work do not. `Month_Return_So_Far_Pct` runs to the
+current session's close and produces a ~29 ppt spread against a same-session target;
+its fully lagged twin `Month_Return_To_Prior_Close_Pct` produces 2–3 ppt. The spread
+is the session's own return read back. `Above_Monthly_Open` has the same defect and
+the same magnitude (~28 ppt) and no lagged twin.
+
+### Intraday range magnitude is conditioned by the sign of the prior path, not its size
+
+Scored as `Window_Log_Range_Ratio` — today's window range over the prior session's
+same window — so volatility clustering is already in the denominator.
+
+| ES `1300_to_Close`, Train | log ratio | as a factor |
+| --- | ---: | ---: |
+| P25 Low — down morning | +0.186 | **1.20×** yesterday's afternoon |
+| P75 High — up morning | −0.177 | **0.84×** yesterday's afternoon |
+| spread | −0.363 | **0.70×** between buckets |
+
+An up morning is followed by an afternoon ~30% narrower than a down morning's,
+measured against each day's own baseline. It replicates: ES Train −0.363 / OOS −0.591,
+NQ Train −0.344 / OOS −0.567, CIs disjoint in all four. `Prior_Window_Return_Pct`
+tells the same story (ES −0.302 / −0.397, NQ −0.312 / −0.412).
+
+Conditioning range on **range** is mostly the vol clustering the ratio already removes:
+raw range spreads of 0.75–1.03 ppt collapse to a 1.10–1.23× residual on the morning
+window (significant on both symbols) and to nothing on the afternoon (0.98–1.06,
+overlapping CIs). The size of the prior move carries little; its sign carries most.
+
 ## ES/NQ Result Gallery
 
 | ES | NQ |
