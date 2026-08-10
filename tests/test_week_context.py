@@ -251,3 +251,76 @@ def test_bootstrap_mean_ci_clusters_on_weeks():
 
 def test_week_context_is_exposed_as_a_module():
     assert "week_context" in analysis.MODULES
+
+
+# ── Nested closing windows ─────────────────────────────────────────────────────
+
+
+def _closing_session(session_date, prices) -> list:
+    """Minute bars through the afternoon, so the nested closing windows are populated."""
+    day = pd.Timestamp(session_date).normalize()
+    bars = []
+    for hour, minute in [(13, 0), (13, 30), (14, 0), (14, 30), (15, 0), (15, 20),
+                         (15, 40), (15, 50), (15, 55), (16, 30)]:
+        price = prices.get((hour, minute), 100.0)
+        stamp = day + pd.Timedelta(hours=hour, minutes=minute)
+        bars.append((stamp, price, price + 1.0, price - 1.0, price))
+    # A Globex bar so the session has an open before 13:00.
+    bars.insert(0, (day - pd.Timedelta(hours=6), 100.0, 101.0, 99.0, 100.0))
+    return bars
+
+
+def _closing_frame(n_sessions: int = 6) -> pd.DataFrame:
+    bars = []
+    day = pd.Timestamp("2022-03-07")
+    for _ in range(n_sessions):
+        while day.dayofweek >= 5:
+            day += pd.Timedelta(days=1)
+        bars.extend(_closing_session(day, {}))
+        day += pd.Timedelta(days=1)
+    return _minute_frame(bars)
+
+
+def test_nested_windows_never_take_a_prior_window_from_the_tiling():
+    """
+    A nested window sits inside a tiling window, so a shift(1) over the combined set
+    would hand it an overlapping neighbour. Those columns must stay NaN, and the
+    tiling rows must be untouched by the nested rows being appended.
+    """
+    rows = analysis.build_intraday_window_rows(_closing_frame())
+
+    nested = rows[rows["Window_Name"].isin(analysis.WEEK_CONTEXT_NESTED_WINDOWS)]
+    assert not nested.empty
+    assert nested["Prior_Window_Range_Pct"].isna().all()
+    assert nested["Prior_Window_Return_Pct"].isna().all()
+    assert nested["Next_Window_Return_Pct"].isna().all()
+    # And the nested rows do carry their own explicit prior stretches.
+    for column in analysis.NESTED_PRIOR_CONDITIONERS:
+        assert nested[column].notna().any(), column
+    # Tiling rows never carry the nested-only conditioners.
+    tiling = rows[rows["Window_Name"].isin(analysis.RELATIVE_WINDOWS)]
+    for column in analysis.NESTED_PRIOR_CONDITIONERS:
+        assert tiling[column].isna().all(), column
+
+
+def test_nested_prior_stretches_do_not_overlap_their_target_window():
+    """
+    The whole point of an explicit prior stretch is that it ends before the target
+    opens. If either definition leaked into the window it conditions, the conditioner
+    would contain its own target.
+    """
+    for name, spec in analysis.WEEK_CONTEXT_NESTED_WINDOWS.items():
+        (w_start, _w_end) = spec["window"]
+        for key in ("preceding", "equal_length"):
+            _p_start, p_end = spec[key]
+            assert p_end <= w_start, f"{name}.{key} ends at {p_end}, window opens {w_start}"
+
+
+def test_closing_ten_minutes_is_narrower_than_the_hour_that_contains_it():
+    """A sanity check that the two nested windows are the stretches they claim to be."""
+    rows = analysis.build_intraday_window_rows(_closing_frame())
+
+    hour = rows[rows["Window_Name"].eq("1500_to_1600")]
+    ten = rows[rows["Window_Name"].eq("1550_to_1600")]
+    assert not hour.empty and not ten.empty
+    assert int(ten["Bars_Total"].max()) < int(hour["Bars_Total"].max())

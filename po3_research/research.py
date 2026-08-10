@@ -2889,6 +2889,43 @@ def run_month_context_research(symbol: str = None, path: str = DATA_PATH,
 # opposite directions, and exp(spread) reads directly as a multiplicative factor.
 # `Window_Range_Ratio` stays on the row detail as the auditable level.
 
+# NESTED CLOSING WINDOWS
+#
+# The 15:00 hour and the closing ten minutes both sit INSIDE `1300_to_Close`, so they
+# cannot join `RELATIVE_WINDOWS` — that dict tiles the session, and `Prior_Window_*`
+# is a shift(1) over the tiling. A nested window would corrupt both. They are added as
+# separate target rows instead, which also keeps the published `1300_to_Close` result
+# reproducible.
+#
+# Each carries TWO prior-stretch conditioners, because the right length is not obvious:
+#
+#   preceding     whatever ran from the last natural boundary to this window's open.
+#                 The direct analogue of `Prior_Window_Range_Pct`, but longer than
+#                 the target it conditions.
+#   equal_length  the same duration as the target, so the two range distributions are
+#                 on the same footing and a quantile cut means the same thing on both
+#                 sides of the comparison.
+#
+# Reporting both is the point: if they disagree, the disagreement is the finding.
+WEEK_CONTEXT_NESTED_WINDOWS = {
+    "1500_to_1600": {
+        "window": ((15, 0), (16, 0)),
+        "preceding": ((13, 0), (15, 0)),
+        "equal_length": ((14, 0), (15, 0)),
+    },
+    "1550_to_1600": {
+        "window": ((15, 50), (16, 0)),
+        "preceding": ((15, 0), (15, 50)),
+        "equal_length": ((15, 40), (15, 50)),
+    },
+}
+NESTED_PRIOR_CONDITIONERS = [
+    "Preceding_Stretch_Range_Pct",
+    "Preceding_Stretch_Return_Pct",
+    "Equal_Length_Prior_Range_Pct",
+    "Equal_Length_Prior_Return_Pct",
+]
+
 WEEK_STATE_CONDITIONERS = [
     "Session_Index_In_Week",
     "Week_Return_To_Prior_Close_Pct",
@@ -2901,7 +2938,7 @@ DAY_PRIOR_CONDITIONERS = [
     "Day_Range_To_Window_Open_Pct",
     "Prior_Window_Return_Pct",
     "Prior_Window_Range_Pct",
-]
+] + NESTED_PRIOR_CONDITIONERS
 WEEK_CONTEXT_NUMERIC_CONDITIONERS = [
     "Week_Return_To_Prior_Close_Pct",
     "Week_Range_So_Far_Pct",
@@ -2909,7 +2946,7 @@ WEEK_CONTEXT_NUMERIC_CONDITIONERS = [
     "Day_Range_To_Window_Open_Pct",
     "Prior_Window_Return_Pct",
     "Prior_Window_Range_Pct",
-]
+] + NESTED_PRIOR_CONDITIONERS
 # `Window_Range_Ratio` divides by the PRIOR SESSION's same-window range, so any
 # conditioner whose own observation period contains that session sits on both sides of
 # the division. A wide week-so-far implies a wide yesterday implies a big denominator
@@ -3035,11 +3072,17 @@ def build_intraday_window_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
     One row per session × intraday window, with the window's outcome and the path
     that preceded it inside the same session.
 
-    Windows are `RELATIVE_WINDOWS`, which tile the session 18:00 → 17:00. Day-prior
-    state spans the session open to the window open, so it is empty for the first
-    window of the session and is reported as NaN there.
+    Windows are `RELATIVE_WINDOWS`, which tile the session 18:00 → 17:00, plus the
+    nested closing windows in `WEEK_CONTEXT_NESTED_WINDOWS`. Day-prior state spans the
+    session open to the window open, so it is empty for the first window of the session
+    and is reported as NaN there.
+
+    `Prior_Window_*` is defined on the tiling only. A nested window sits inside a tiling
+    window, so a shift(1) over the combined set would hand it a neighbour that overlaps
+    it; those columns stay NaN on nested rows, which carry their own explicit prior
+    stretches instead.
     """
-    records = []
+    records, nested_records = [], []
     session_keys = intraday_trading_day_index(df_1m.index)
     for trading_day, day in df_1m.groupby(session_keys, sort=True):
         if len(day) < 2:
@@ -3098,6 +3141,64 @@ def build_intraday_window_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
                 "Day_Range_To_Window_Open_Pct": day_range_to_open,
             })
 
+        def _stretch(start_hm, end_hm) -> tuple:
+            """Range and net return over one intraday stretch, as percent of its open."""
+            s = int(idx.searchsorted(_window_timestamp(trading_day, start_hm), side="left"))
+            e = int(idx.searchsorted(_window_timestamp(trading_day, end_hm), side="left"))
+            if e <= s:
+                return np.nan, np.nan
+            s_open = float(opens[s])
+            if not s_open:
+                return np.nan, np.nan
+            rng = (float(highs[s:e].max()) - float(lows[s:e].min())) / s_open * 100
+            ret = (float(closes[e - 1]) / s_open - 1) * 100
+            return rng, ret
+
+        for window_name, spec in WEEK_CONTEXT_NESTED_WINDOWS.items():
+            start_hm, end_hm = spec["window"]
+            start_pos = int(idx.searchsorted(_window_timestamp(trading_day, start_hm), side="left"))
+            end_pos = int(idx.searchsorted(_window_timestamp(trading_day, end_hm), side="left"))
+            if end_pos <= start_pos:
+                continue
+            w_open = float(opens[start_pos])
+            if not w_open:
+                continue
+            w_close = float(closes[end_pos - 1])
+            w_high = float(highs[start_pos:end_pos].max())
+            w_low = float(lows[start_pos:end_pos].min())
+            preceding_range, preceding_return = _stretch(*spec["preceding"])
+            equal_range, equal_return = _stretch(*spec["equal_length"])
+            if start_pos > 0:
+                day_return_to_open = (float(closes[start_pos - 1]) / day_open - 1) * 100
+                day_range_to_open = (float(highs[:start_pos].max())
+                                     - float(lows[:start_pos].min())) / day_open * 100
+            else:
+                day_return_to_open = np.nan
+                day_range_to_open = np.nan
+
+            nested_records.append({
+                "Trading_Day": trading_day,
+                "Split": "Train" if trading_day <= TRAIN_END else "OOS",
+                "Weekday": trading_weekday(trading_day),
+                "Window_Name": window_name,
+                "Window_Open": w_open,
+                "Window_Close": w_close,
+                "Window_High": w_high,
+                "Window_Low": w_low,
+                "Bars_Total": int(end_pos - start_pos),
+                "Window_Return_Pct": (w_close / w_open - 1) * 100,
+                "Window_Bullish": bool(w_close > w_open),
+                "Window_Range_Pct": (w_high - w_low) / w_open * 100,
+                "Window_High_Excursion_Pct": (w_high - w_open) / w_open * 100,
+                "Window_Low_Excursion_Pct": (w_open - w_low) / w_open * 100,
+                "Day_Return_To_Window_Open_Pct": day_return_to_open,
+                "Day_Range_To_Window_Open_Pct": day_range_to_open,
+                "Preceding_Stretch_Range_Pct": preceding_range,
+                "Preceding_Stretch_Return_Pct": preceding_return,
+                "Equal_Length_Prior_Range_Pct": equal_range,
+                "Equal_Length_Prior_Return_Pct": equal_return,
+            })
+
     rows = pd.DataFrame.from_records(records)
     if rows.empty:
         return rows
@@ -3114,6 +3215,16 @@ def build_intraday_window_rows(df_1m: pd.DataFrame) -> pd.DataFrame:
     # The signed follow-through target: the NEXT window's return, so the row's own
     # window is the conditioner's observation period and the target is strictly after.
     rows["Next_Window_Return_Pct"] = by_day["Window_Return_Pct"].shift(-1)
+
+    # Nested rows join only AFTER the tiling shifts, so they cannot be handed an
+    # overlapping neighbour as their prior window. They do take part in everything
+    # below, which is keyed on Window_Name and so stays correct for any window.
+    if nested_records:
+        nested = pd.DataFrame.from_records(nested_records)
+        nested["Window_Order"] = nested["Window_Name"].map(
+            {name: len(RELATIVE_WINDOWS) + i
+             for i, name in enumerate(WEEK_CONTEXT_NESTED_WINDOWS)})
+        rows = pd.concat([rows, nested], ignore_index=True)
 
     # The volatility-clustering denominator: the SAME window one session earlier.
     prior_day = rows.sort_values(["Window_Name", "Trading_Day"]).groupby("Window_Name")

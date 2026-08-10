@@ -149,6 +149,34 @@ raw range spreads of 0.75–1.03 ppt collapse to a 1.10–1.23× residual on the
 window (significant on both symbols) and to nothing on the afternoon (0.98–1.06,
 overlapping CIs). The size of the prior move carries little; its sign carries most.
 
+### Approaching the close, that reverses: size starts to matter and sign stops
+
+Two nested closing windows — the 15:00 hour and the last ten minutes — each scored
+against two prior stretches, the immediately preceding one and an equal-length one.
+
+| Window | Conditioner | ES Train | ES OOS | NQ Train | NQ OOS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 15:00–16:00 | prior **range** | 1.25–1.28× | 1.31–1.46× | 1.28–1.30× | 1.37–1.49× |
+| 15:00–16:00 | prior **return** | 0.76–0.79× | 0.71–0.76× | 0.79–0.82× | 0.72–0.82× |
+| 15:50–16:00 | prior **range** | 1.17–1.23× | 1.29–1.35× | 1.17–1.23× | 1.30–1.31× |
+| 15:50–16:00 | prior **return** | 0.85–0.90× | *n.s.* | 0.83–0.88× | *n.s.* |
+
+Every range cell has disjoint CIs on both symbols and both splits. The return effect —
+the leverage effect that dominates `1300_to_Close` at 0.70× — weakens through the
+15:00 hour and **fails out of sample in the last ten minutes on both symbols**, where
+the OOS spread flips sign and the CIs overlap. In the closing ten minutes the size of
+the prior stretch is what carries; its direction does not.
+
+The two prior definitions agree to within ~0.09 log units everywhere, so the
+length-matching question the design raised turns out not to matter here.
+
+**Caveat on the range column.** `Window_Log_Range_Ratio` divides out *day-over-day*
+clustering, not *within-day short-lag* clustering. These nested conditioners sit much
+closer to their targets (2h and 50m) than the tiling conditioners do, so part of the
+1.2–1.5× residual is plausibly short-horizon intraday persistence that the prior-day
+denominator was never built to remove. Treat the closing-window range result as
+weaker evidence than the `1300_to_Close` return result, which has no such confound.
+
 ## ES/NQ Result Gallery
 
 | ES | NQ |
@@ -541,6 +569,26 @@ theirs to read, and hiding the row would hide the confound.
 
 Continuous targets carry a cluster-bootstrapped mean and CI via `bootstrap_mean_ci`,
 clustered on `Week_Start`: twenty windows a week are not twenty independent draws.
+
+**Nested closing windows.** `WEEK_CONTEXT_NESTED_WINDOWS` adds the 15:00 hour and the
+closing ten minutes. Both sit *inside* `1300_to_Close`, so they cannot join
+`RELATIVE_WINDOWS` — that dict tiles the session and `Prior_Window_*` is a `shift(1)`
+over the tiling, which would hand a nested window an overlapping neighbour. They are
+appended as separate target rows after the tiling shifts are computed, so
+`Prior_Window_*` stays NaN on them and the published `1300_to_Close` figures are
+unchanged.
+
+Each nested window carries two explicit prior stretches instead, because the right
+length is not obvious: `Preceding_Stretch_*` runs from the last natural boundary to the
+window open (2h for the 15:00 hour, 50m for the closing ten minutes), and
+`Equal_Length_Prior_*` spans the same duration as the target. Both are reported —
+if they disagree, the disagreement is the finding. Each is reported as a range and as
+a return, since the module's main result is that sign and size behave differently.
+
+The ratio's denominator removes day-over-day clustering, not within-day short-lag
+clustering. A conditioner sitting two hours before its target is closer than any
+tiling conditioner, so its residual is partly short-horizon persistence the
+denominator does not reach.
 
 </details>
 
