@@ -1,5 +1,6 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+import pytest
 
 import analysis
 
@@ -541,3 +542,235 @@ def test_relative_path_summaries_include_composite_state_grouping():
     assert "Above_All" in set(intraday["Feature_Bucket"])
     assert "Composite_Level_State" in set(weekly_summary["Feature"])
     assert "Below_All" in set(weekly_summary["Feature_Bucket"])
+
+
+# ── Session-date weekday attribution ────────────────────────────────────────
+
+def test_trading_weekday_uses_the_18_00_session_roll_not_the_calendar_day():
+    sunday_evening = pd.Timestamp("2023-12-31 18:00", tz="America/New_York")
+    monday_rth = pd.Timestamp("2024-01-01 09:30", tz="America/New_York")
+    monday_evening = pd.Timestamp("2024-01-01 19:00", tz="America/New_York")
+
+    assert analysis.trading_weekday(sunday_evening) == "Monday"
+    assert analysis.trading_weekday(monday_rth) == "Monday"
+    # The old calendar attribution called this "Monday", giving Monday two evening
+    # sessions (~28.5h) against Friday's ~17h.
+    assert analysis.trading_weekday(monday_evening) == "Tuesday"
+
+
+def test_trading_weekday_gives_every_weekday_the_same_bar_count():
+    idx = pd.date_range("2023-12-31 18:00", "2024-01-05 17:00", freq="1h", tz="America/New_York")
+    counts = pd.Series(analysis.trading_weekday_index(idx)).value_counts()
+
+    assert set(counts.index) == set(analysis.DAYS)
+    assert counts.nunique() == 1
+
+
+def test_trading_week_monday_is_unchanged_by_the_session_roll():
+    week_start = pd.Timestamp("2024-01-01", tz="America/New_York")
+    for ts in ["2023-12-31 18:00", "2024-01-01 09:30", "2024-01-01 19:00", "2024-01-05 16:00"]:
+        assert analysis.trading_week_monday(pd.Timestamp(ts, tz="America/New_York")) == week_start
+
+
+def test_build_weekly_attributes_an_evening_extreme_to_the_next_session_day():
+    idx = pd.to_datetime([
+        "2024-01-01 09:00", "2024-01-01 19:00", "2024-01-02 09:00",
+    ]).tz_localize("America/New_York")
+    df = pd.DataFrame(
+        {"Open": [100, 100, 100], "High": [101, 105, 102], "Low": [99, 98, 90], "Close": [100, 100, 95], "Volume": [1, 1, 1]},
+        index=idx,
+    )
+
+    weekly = analysis.build_weekly(df)
+
+    assert weekly.iloc[0]["High_Weekday"] == "Tuesday"   # Monday 19:00 is Tuesday's session
+    assert weekly.iloc[0]["Low_Weekday"] == "Tuesday"
+
+
+# ── Next session ────────────────────────────────────────────────────────────
+
+# One futures day with every key level present. Session labels per bar:
+# 18:00 Other | 19:00-23:00 Asia | 00:00-08:00 London | 09:00-11:00 NY AM
+# | 12:00-15:00 NY PM | 16:00-16:59 Other
+SPARSE_DAY_CLOSES = {
+    "2024-01-01 18:00": 100, "2024-01-01 19:00": 101, "2024-01-01 23:00": 102,
+    "2024-01-02 00:00": 103, "2024-01-02 08:00": 104,
+    "2024-01-02 09:00": 105, "2024-01-02 09:29": 106, "2024-01-02 09:30": 107, "2024-01-02 11:00": 108,
+    "2024-01-02 12:00": 109, "2024-01-02 13:00": 110, "2024-01-02 15:00": 111,
+    "2024-01-02 16:00": 112, "2024-01-02 16:59": 113,
+}
+
+
+def _sparse_day():
+    idx = pd.to_datetime(list(SPARSE_DAY_CLOSES)).tz_localize("America/New_York")
+    closes = list(SPARSE_DAY_CLOSES.values())
+    return pd.DataFrame(
+        {"Open": closes, "High": [c + 1 for c in closes], "Low": [c - 1 for c in closes], "Close": closes, "Volume": [1] * len(closes)},
+        index=idx,
+    )
+
+
+def test_next_session_return_stops_at_the_next_session_not_the_day_close():
+    rows = analysis.build_relative_level_path_rows(_sparse_day())
+    row = rows[rows["Level_Name"].eq("NY_Midnight_Open") & rows["Window_Name"].eq("Midnight_to_0930")].iloc[0]
+
+    # Window ends 09:30 inside NY AM; the next session block is NY PM (12:00, 15:00).
+    # The day close (112 at 16:59) is in "Other" and must not be used.
+    assert row["Next_Session_Return_Pct"] == pytest.approx((111 / 106 - 1) * 100)
+    assert row["Next_Session_Bullish"] is True
+
+
+def test_next_session_return_for_an_overnight_window_ends_at_the_london_close():
+    rows = analysis.build_relative_level_path_rows(_sparse_day())
+    row = rows[rows["Level_Name"].eq("Globex_Open") & rows["Window_Name"].eq("Globex_to_Midnight")].iloc[0]
+
+    # Window ends at midnight inside Asia; next block is London (00:00, 08:00).
+    assert row["Next_Session_Return_Pct"] == pytest.approx((104 / 102 - 1) * 100)
+
+
+def test_next_session_return_is_nan_when_no_session_follows():
+    rows = analysis.build_relative_level_path_rows(_sparse_day())
+    row = rows[rows["Level_Name"].eq("NY_1300_Open") & rows["Window_Name"].eq("1300_to_Close")].iloc[0]
+
+    assert pd.isna(row["Next_Session_Return_Pct"])
+    assert pd.isna(row["Next_Session_Bullish"])
+
+
+def test_next_session_bounds_skips_the_whole_current_block():
+    sessions = np.array(["Asia", "Asia", "London", "London", "NY AM"], dtype=object)
+
+    assert analysis._next_session_bounds(sessions, 0) == (2, 3)
+    assert analysis._next_session_bounds(sessions, 2) == (4, 4)
+    assert analysis._next_session_bounds(sessions, 4) is None
+
+
+# ── Look-ahead level/window pairs ───────────────────────────────────────────
+
+def test_relative_path_rows_flag_levels_that_postdate_the_window():
+    rows = analysis.build_relative_level_path_rows(_sparse_day())
+    flags = rows.set_index(["Level_Name", "Window_Name"])["Level_Defined_By_Window_End"]
+
+    assert flags[("Globex_Open", "Globex_to_Midnight")] is True or flags[("Globex_Open", "Globex_to_Midnight")]
+    assert not flags[("NY_1300_Open", "Globex_to_Midnight")]
+    assert not flags[("NY_1300_Open", "Midnight_to_0930")]
+    assert not flags[("NY_0930_Open", "Globex_to_Midnight")]
+
+
+def test_drop_lookahead_level_windows_removes_only_undefined_pairs():
+    rows = analysis.build_relative_level_path_rows(_sparse_day())
+
+    kept = analysis.drop_lookahead_level_windows(rows)
+
+    assert len(kept) == len(rows) - 3
+    assert kept["Level_Defined_By_Window_End"].all()
+    assert len(analysis.drop_lookahead_level_windows(rows, include_lookahead=True)) == len(rows)
+
+
+def test_relative_path_summaries_exclude_lookahead_pairs_by_default():
+    rows = analysis.build_relative_level_path_rows(_sparse_day())
+
+    summary = analysis.relative_path_intraday_outcomes(rows, features=["Pct_Bars_Above_Level"])
+
+    combos = set(zip(summary["Level_Name"], summary["Window_Name"]))
+    assert ("NY_1300_Open", "Globex_to_Midnight") not in combos
+    assert ("NY_Midnight_Open", "Midnight_to_0930") in combos
+
+
+# ── VWAP without volume ─────────────────────────────────────────────────────
+
+def test_zero_volume_window_yields_nan_vwap_rather_than_a_twap_copy():
+    day = _sparse_day()
+    day["Volume"] = 0
+
+    rows = analysis.build_relative_level_path_rows(day)
+    row = rows[rows["Level_Name"].eq("NY_Midnight_Open") & rows["Window_Name"].eq("Midnight_to_0930")].iloc[0]
+
+    assert pd.isna(row["Window_VWAP"])
+    assert pd.isna(row["VWAP_Distance_To_Level"])
+    assert row["VWAP_Above_Level"] is None
+    assert not pd.isna(row["Window_TWAP"])
+
+
+# ── Train-only bucketing ────────────────────────────────────────────────────
+
+def test_range_expansion_buckets_use_train_thresholds_only():
+    rows = pd.DataFrame(
+        {
+            "Slot_Index": [0] * 6,
+            "Split": ["Train"] * 3 + ["OOS"] * 3,
+            "Developing_Range": [1.0, 2.0, 3.0, 100.0, 200.0, 300.0],
+        }
+    )
+
+    buckets = analysis._range_expansion_buckets(rows)
+
+    assert list(buckets[:3]) == ["Low", "Medium", "High"]
+    # OOS rows sit far above every train tercile, so they are all "High".
+    # Pooling the sample would have re-centred the thresholds on OOS data.
+    assert list(buckets[3:]) == ["High", "High", "High"]
+
+
+# ── Forward-touch ordering ──────────────────────────────────────────────────
+
+def test_forward_touch_buckets_sort_from_the_18_00_session_open():
+    idx = pd.date_range("2024-01-01 18:00", "2024-01-02 16:00", freq="1h", tz="America/New_York")
+    df = pd.DataFrame(
+        {"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 1.0},
+        index=idx,
+    )
+
+    out = analysis.intraday_level_forward_touch_distribution(df, bucket_freq="1h")
+    globex = out[out["Level_Name"].eq("Globex_Open")]
+
+    assert list(globex["Bucket_Time"])[:3] == ["19:00", "20:00", "21:00"]
+    assert list(globex["Bucket_Time"])[-1] == "16:00"
+    assert globex["Bucket_Session_Minute"].is_monotonic_increasing
+
+
+# ── Weekly targets keyed by weekday ─────────────────────────────────────────
+
+def test_path_dependency_summary_keys_on_weekday_and_reports_week_counts():
+    intraday = pd.DataFrame(
+        {
+            "Trading_Day": pd.to_datetime(["2024-01-01", "2024-01-05"]).tz_localize("America/New_York"),
+            "Split": ["Train", "Train"],
+            "Level_Name": ["NY_0930_Open", "NY_0930_Open"],
+            "Revisited": [True, True],
+            "Minutes_To_First_Revisit": [10, 30],
+            "Touch_Bars_Total": [1, 9],
+            "Post_Revisit_High_Excursion": [2, 10],
+            "Post_Revisit_Low_Excursion": [1, 8],
+            "Day_Bullish": [True, False],
+            "Day_Close_Above_Level": [True, False],
+        }
+    )
+    weekly = pd.DataFrame(
+        {"Bull_Bear": ["Bullish"], "High_Weekday": ["Friday"], "Low_Weekday": ["Monday"], "High_Session": ["NY PM"], "Low_Session": ["NY AM"]},
+        index=[pd.Timestamp("2024-01-01", tz="America/New_York")],
+    )
+
+    _, summary = analysis.intraday_to_weekly_path_dependency(intraday, weekly)
+
+    assert "Weekday" in summary.columns
+    assert set(summary["Weekday"]) == {"Monday", "Friday"}
+    # Both days belong to the same week, so a weekly label is one observation.
+    assert summary["n_weeks"].max() == 1
+
+
+def test_weekly_open_revisit_outcomes_report_monday_extremes():
+    rows = pd.DataFrame(
+        {
+            "Split": ["Train", "Train"],
+            "Revisited_Weekly_Open": [True, True],
+            "First_Revisit_Timing_Bucket": ["Early 0-25%", "Early 0-25%"],
+            "Bull_Bear": ["Bullish", "Bearish"],
+            "High_Weekday": ["Monday", "Friday"],
+            "Low_Weekday": ["Monday", "Monday"],
+            "Close_Above_Weekly_Open": [True, False],
+        }
+    )
+
+    out = analysis.weekly_open_revisit_outcomes(rows)
+
+    assert out.iloc[0]["low_monday_pct"] == 100.0
+    assert out.iloc[0]["high_monday_pct"] == 50.0
